@@ -208,6 +208,27 @@ class TestTeamBrief:
         assert env["ok"] is True and env["data"]["via"] == "self"
         assert env["data"]["club"]["name"] == "切尔西"
 
+    def test_bindings_degraded_falls_back_to_local_cache(self, conn):
+        """审查修复：绑定服务启用但请求失败（BindingsError）→ 捕获降级，
+        按本地缓存绑定回答 + caveat「身份服务暂时不可用」，不 UPSTREAM_ERROR（§4.7）。"""
+        ctx = build_tool_ctx(conn)
+
+        async def broken_transport(method, url, headers=None, body=None):
+            raise ConnectionError("模拟绑定端点断网")
+
+        ctx.bindings = import_plugin("identity.client").BindingsClient(
+            "https://plat.invalid", "sec", transport=broken_transport
+        )
+        bind_member(ctx, "222", 5, "切尔西", "教练甲")
+        resolve_mod._BINDING_CACHE.clear()
+        try:
+            env = call(ctx, "whl_team_brief", {}, sender="222")
+            assert env["ok"] is True and env["data"]["via"] == "self"
+            assert env["data"]["club"]["name"] == "切尔西"
+            assert any("身份服务暂时不可用" in c for c in env["caveats"])
+        finally:
+            resolve_mod._BINDING_CACHE.clear()
+
     def test_not_bound_when_unbound_and_no_card(self, ctx):
         """I05：未绑定且名片无队名 → NOT_BOUND，反问不猜。"""
         env = call(ctx, "whl_team_brief", {}, sender="999")
@@ -464,6 +485,36 @@ class TestMatchLookup:
         m = env["data"]["matches"][0]
         assert "利物浦" in (m["home"], m["away"])
         assert m["status"] == "pending"
+
+    def test_pending_kickoff_null_renders_time_undecided(self, ctx):
+        """审查修复：生产数据 pending 场次 kickoff_week/day 全 null → 「时间未定」，
+        summary 与 data 里不得出现「第None周第None日」。"""
+        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next"})
+        assert env["ok"] is True
+        m = env["data"]["matches"][0]
+        assert m["status"] == "pending" and m["kickoff"] == "时间未定"
+        assert "时间未定" in env["summary"] and "None" not in env["summary"]
+        assert "第None" not in json.dumps(env, ensure_ascii=False)
+        # league brief 的 next fixtures 同款拼接，一并回归
+        league_env = call(ctx, "whl_league_brief", {"scope": "top"})
+        assert league_env["ok"] is True
+        assert "第None" not in json.dumps(league_env, ensure_ascii=False)
+        # team brief 的 next_match 同款拼接（种子数据里利物浦必有 pending 下一场）
+        team_env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        nm = team_env["data"]["next_match"]
+        assert nm["kickoff"] == "时间未定" and "None" not in team_env["summary"]
+
+    def test_kickoff_text_all_shapes(self, ctx):
+        """三个工具模块的 _kickoff_text：有数据渲染原格式，null → 「时间未定」。"""
+        for name in ("tools.match", "tools.league", "tools.team"):
+            mod = import_plugin(name)
+            brief = mod._fixture_brief({"match_id": 1, "home": "A", "away": "B",
+                                        "kickoff_week": 3, "kickoff_day": 5, "kickoff_time": "19:30"})
+            assert brief["kickoff"] == "第3周第5日 19:30"
+            assert mod._fixture_brief(
+                {"match_id": 1, "home": "A", "away": "B", "kickoff_week": 3, "kickoff_day": 5}
+            )["kickoff"] == "第3周第5日"
+            assert mod._fixture_brief({"match_id": 1, "home": "A", "away": "B"})["kickoff"] == "时间未定"
 
     def test_prev_match(self, ctx):
         env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "prev"})

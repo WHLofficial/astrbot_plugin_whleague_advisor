@@ -408,7 +408,10 @@ async def resolve_team_arg(
     if not call.sender_id:
         raise ToolError(NOT_BOUND, "拿不到发送者身份，无法解析「我们队」")
     member = members.binding_of(group_id or "", call.sender_id)
-    bindings = await _fetch_bindings(ctx, call, [call.sender_id])
+    try:
+        bindings = await _fetch_bindings(ctx, call, [call.sender_id])
+    except _BindingsDegraded:
+        bindings = {}  # 绑定服务启用但请求失败：下方本地缓存分支补 caveat（§4.7）
     item = bindings.get(call.sender_id)
     if item and item.get("bound"):
         club = _club_from_binding(ctx.conn, item)

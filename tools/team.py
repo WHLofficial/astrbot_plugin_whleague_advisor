@@ -239,12 +239,22 @@ def _person_brief(member: dict) -> dict:
     }
 
 
+def _kickoff_text(f: dict) -> str:
+    """kickoff 渲染：pending 未排期场次 week/day 为 null → 「时间未定」，不渲染 None。"""
+    period = ""
+    if f.get("kickoff_week") is not None:
+        day = f"第{f['kickoff_day']}日" if f.get("kickoff_day") is not None else ""
+        period = f"第{f['kickoff_week']}周{day}"
+    parts = [period, str(f.get("kickoff_time") or "")]
+    return " ".join(p for p in parts if p) or "时间未定"
+
+
 def _fixture_brief(f: dict) -> dict:
     return {
         "matchId": f.get("match_id"),
         "round": f.get("round"),
         "home": f.get("home"), "away": f.get("away"),
         "score": None if f.get("home_score") is None else f"{f.get('home_score')}:{f.get('away_score')}",
-        "kickoff": f"第{f.get('kickoff_week')}周第{f.get('kickoff_day')}日 {f.get('kickoff_time') or ''}".strip(),
+        "kickoff": _kickoff_text(f),
         "status": f.get("status"),
     }
