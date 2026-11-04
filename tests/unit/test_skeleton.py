@@ -17,6 +17,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from conftest import import_plugin
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_PY = REPO_ROOT / "main.py"
 
@@ -152,7 +154,7 @@ def test_metadata_yaml_parses_and_name_correct():
     assert metadata["name"] == EXPECTED_NAME
     for field in METADATA_REQUIRED_FIELDS:
         assert isinstance(metadata.get(field), str) and metadata[field].strip(), field
-    assert metadata["version"] == "0.1.0"
+    assert metadata["version"] == "0.2.0"
     assert metadata["support_platforms"] == ["aiocqhttp"]
     assert metadata["astrbot_version"] == ">=4,<5"
     assert metadata["repo"].startswith("https://github.com/")
@@ -162,7 +164,8 @@ def test_metadata_yaml_parses_and_name_correct():
 
 
 def test_unconfigured_reply_contains_unconfigured():
-    from status import build_status_reply, is_idle
+    status = import_plugin("status")
+    build_status_reply, is_idle = status.build_status_reply, status.is_idle
 
     # 默认安装状态：两项均空
     reply = build_status_reply([], "")
@@ -174,7 +177,8 @@ def test_unconfigured_reply_contains_unconfigured():
 
 
 def test_partial_config_stays_idle():
-    from status import build_status_reply, is_idle
+    status = import_plugin("status")
+    build_status_reply, is_idle = status.build_status_reply, status.is_idle
 
     assert is_idle([123456], "") is True  # 有群无数据源
     assert "未配置" in build_status_reply([123456], "")
@@ -184,7 +188,8 @@ def test_partial_config_stays_idle():
 
 def test_string_enabled_groups_not_iterated_char_by_char():
     """enabled_groups 误配成字符串时按分隔符拆分，不逐字符迭代（审查问题 4）。"""
-    from status import build_status_reply, is_idle
+    status = import_plugin("status")
+    build_status_reply, is_idle = status.build_status_reply, status.is_idle
 
     # 单个群号字符串：算 1 个群，不是 9 个字符（占位号，非真实群号）
     assert is_idle("123456789", "") is True

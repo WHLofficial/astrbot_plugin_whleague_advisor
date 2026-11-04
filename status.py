@@ -7,7 +7,7 @@
 import re
 
 PLUGIN_NAME = "astrbot_plugin_whleague_advisor"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.2.0"
 
 # 默认配置（两空）下 /whl_status 的唯一回复：一句「未配置」，零网络请求。
 MSG_UNCONFIGURED = (
@@ -27,9 +27,60 @@ MSG_MISSING_GROUPS = (
 )
 
 MSG_READY = (
-    "WHL 联赛顾问：已启用 {group_count} 个群，数据源已配置。"
-    "数据层与 whl_* 工具将在后续版本接入。"
+    "WHL 联赛顾问：已启用 {group_count} 个群，数据源已配置，数据同步已启动。\n"
+    "{sync_summary}"
 )
+
+_JOB_LABELS = {"season": "赛季", "clubs": "俱乐部", "standings": "积分榜", "fixtures": "赛程"}
+
+
+def format_clock(iso: str | None) -> str:
+    """UTC ISO-8601 → 「MM-DD HH:MM」本地未用时区概念，直接截取 UTC 显示。"""
+    if not iso:
+        return "从未"
+    # 形如 2026-11-05T00:48:00+00:00 → 11-05 00:48（UTC）
+    try:
+        date_part, time_part = iso.split("T", 1)
+        return f"{date_part[5:]} {time_part[:5]}"
+    except (ValueError, IndexError):
+        return iso
+
+
+def build_sync_summary(snapshot: dict) -> str:
+    """把 dao.collect_status_snapshot 的快照渲染成状态文案（纯函数，可独立测试）。
+
+    空快照（尚未同步）→ 一句「尚未同步」；有降级必须显式点名，不藏着。
+    """
+    if not snapshot.get("last_success") and not snapshot.get("last_runs"):
+        return "数据同步：尚未运行（等待首次调度）。"
+    lines = ["数据同步："]
+    last_success: dict = snapshot.get("last_success") or {}
+    degraded: dict = snapshot.get("degraded") or {}
+    last_runs: dict = snapshot.get("last_runs") or {}
+    counts: dict = snapshot.get("counts") or {}
+    for job, label in _JOB_LABELS.items():
+        if job in degraded:
+            reason = (degraded[job] or {}).get("reason", "")
+            lines.append(f"· {label}：已降级（{reason}），使用旧数据")
+        elif job in last_success:
+            rows_hint = ""
+            run = last_runs.get(job)
+            if run and run.get("rows") is not None:
+                rows_hint = f"，{run['rows']} 行"
+            lines.append(f"· {label}：{format_clock(last_success[job])}{rows_hint}")
+        elif job in last_runs:
+            run = last_runs[job]
+            lines.append(f"· {label}：{run.get('status', '?')}（{run.get('error') or '无详情'}）")
+        else:
+            lines.append(f"· {label}：尚未运行")
+    line_counts = "，".join(
+        f"{label} {counts[key]}"
+        for key, label in (("clubs", "俱乐部"), ("standings", "积分行"), ("fixtures", "赛程"))
+        if key in counts
+    )
+    if line_counts:
+        lines.append(f"· 行数：{line_counts}")
+    return "\n".join(lines)
 
 
 def _normalize(enabled_groups, club_base_url):
@@ -60,10 +111,12 @@ def is_idle(enabled_groups, club_base_url) -> bool:
     return not groups or not base_url
 
 
-def build_status_reply(enabled_groups, club_base_url) -> str:
+def build_status_reply(enabled_groups, club_base_url, sync_snapshot: dict | None = None) -> str:
     """根据配置生成 /whl_status 的回复文本。
 
     两项均未配置（默认安装状态）时只回一句「未配置」。
+    sync_snapshot 是 dao.collect_status_snapshot 的只读快照（可选），
+    仅在已配置时拼进「数据同步」小节。
     纯函数：不读配置文件、不发请求，全部输入来自参数。
     """
     groups, base_url = _normalize(enabled_groups, club_base_url)
@@ -73,4 +126,5 @@ def build_status_reply(enabled_groups, club_base_url) -> str:
         return MSG_MISSING_BASE_URL.format(group_count=len(groups))
     if not groups:
         return MSG_MISSING_GROUPS
-    return MSG_READY.format(group_count=len(groups))
+    summary = build_sync_summary(sync_snapshot or {})
+    return MSG_READY.format(group_count=len(groups), sync_summary=summary)

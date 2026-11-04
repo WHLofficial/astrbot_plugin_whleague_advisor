@@ -1,2 +1,2 @@
-# v0.1.0 骨架阶段：仅依赖 AstrBot 自带能力，无第三方依赖。
-# 后续版本接入数据层时在此追加（如 aiohttp 已随 AstrBot 提供）。
+# v0.2.0 数据层：仅依赖 AstrBot 自带能力（aiohttp 随 AstrBot 提供，用于公开 GET 同步），
+# 无需额外安装第三方包。

@@ -16,5 +16,17 @@
     "hint": "自备的 tour 数据源基础地址（公开只读接口），留空（默认）= 不同步积分与赛程。",
     "type": "string",
     "default": ""
+  },
+  "sync_hot_minutes": {
+    "description": "热层同步间隔（分钟）",
+    "hint": "赛季 / 积分榜 / 赛程的刷新间隔，默认 5 分钟。",
+    "type": "int",
+    "default": 5
+  },
+  "sync_warm_minutes": {
+    "description": "温层同步间隔（分钟）",
+    "hint": "俱乐部列表的刷新间隔，默认 15 分钟。",
+    "type": "int",
+    "default": 15
   }
 }
