@@ -174,21 +174,32 @@ class TestNumberChecker:
         tokens = ev.extract_numbers("Benzema 值 3000 万", echo="Benzema 值 3000 万吗")
         assert tokens == []  # 题干回显不参与判定（README §3.1）
 
+    def test_echo_substring_does_not_swallow_short_numbers(self, ev):
+        """回显剔除按完整 token 相等：题干「35 分」不能把回答里编造的「5」一并漏掉。"""
+        tokens = ev.extract_numbers("他其实只拿到 5 分", echo="他上轮拿到 35 分")
+        assert [t["raw"] for t in tokens] == ["5"]
+
     def test_value_set_from_envelope_with_array_derivation(self, ev):
         envelope = json.dumps({
             "ok": True, "as_of": "2026-11-04T10:00:00Z",
             "data": {"standings": [{"points": 24}, {"points": 21}]},
         })
         value_set = ev.build_value_set([envelope])
-        assert 24.0 in value_set and 21.0 in value_set
+        values = {v for v, _ in value_set}
+        int_flags = {v: flag for v, flag in value_set}
+        assert 24.0 in values and 21.0 in values
+        assert int_flags[24.0] is True and int_flags[21.0] is True  # json int 叶子
         # 同一数组字段 ≤8 元素的一层派生：sum/count/max/min/avg（README §3.3）
-        assert 45.0 in value_set   # sum
-        assert 2.0 in value_set    # count
-        assert 22.5 in value_set   # avg
+        assert 45.0 in values   # sum
+        assert 2.0 in values    # count
+        assert 22.5 in values   # avg（派生一律当小数）
+        assert dict((v, f) for v, f in value_set)[45.0] is True   # int+int → int
+        assert dict((v, f) for v, f in value_set)[22.5] is False
 
     def test_non_json_result_falls_back_to_text_numbers(self, ev):
         value_set = ev.build_value_set(["最高出价 4，共 5 笔在谈"])
-        assert 5.0 in value_set and 4.0 in value_set
+        assert {v for v, _ in value_set} == {5.0, 4.0}
+        assert all(flag is False for _, flag in value_set)  # 文本兜底无整型来源
 
     def test_verify_pass_when_numbers_match_tools(self, ev):
         envelope = json.dumps({"ok": True, "data": {"points": 24, "played": 11}})
@@ -207,11 +218,27 @@ class TestNumberChecker:
         assert ev.verify_answer_numbers("工资总额 65.3", "", value_set) == []     # 0.1 < 0.5% 相对
         assert ev.verify_answer_numbers("工资总额 66.0", "", value_set) == ["66.0"]
 
+    def test_integer_targets_require_exact(self, ev):
+        """README §3.4 第一行：整数（积分/排名/人数/年龄/CA）精确——积分 24 答成 24.1 是幻觉。"""
+        envelope = json.dumps({"ok": True, "data": {"points": 24}})
+        value_set = ev.build_value_set([envelope])
+        assert ev.verify_answer_numbers("积分 24 分", "", value_set) == []        # 整数精确命中
+        assert ev.verify_answer_numbers("积分 24.1 分", "", value_set) == ["24.1"]
+        assert ev.verify_answer_numbers("积分 25 分", "", value_set) == ["25"]
+
+    def test_amount_amounts_use_three_significant_digits(self, ev):
+        """README §3.4 金额行：3 位有效数字半步（530 万 → ±5000），无约不放宽到 0.5%。"""
+        envelope = json.dumps({"ok": True, "data": {"fair_mid": 5_300_000.0}})
+        value_set = ev.build_value_set([envelope])
+        assert ev.verify_answer_numbers("530 万", "", value_set) == []
+        assert ev.verify_answer_numbers("531 万", "", value_set) == ["531 万"]    # 第 3 位有效数字变了
+        assert ev.verify_answer_numbers("532 万", "", value_set) == ["532 万"]
+
     def test_approx_widens_amount_tolerance(self, ev):
         envelope = json.dumps({"ok": True, "data": {"fair_mid": 5_200_000.0}})
         value_set = ev.build_value_set([envelope])
         assert ev.verify_answer_numbers("大约 530 万", "", value_set) == []       # 约 → ±5%
-        assert ev.verify_answer_numbers("530 万", "", value_set) == ["530 万"]    # 无约 → 0.5%
+        assert ev.verify_answer_numbers("530 万", "", value_set) == ["530 万"]    # 无约 → 3 位有效数字
 
     def test_percent_tolerance_half_pp(self, ev):
         envelope = json.dumps({"ok": True, "data": {"position_percentile": 0.955}})
@@ -237,6 +264,11 @@ class TestPrivacyRedline:
 
     def test_forbidden_field_name_hit(self, ev):
         assert ev.scan_privacy_redline("他的 account_id 是 11", "") != []
+        assert ev.scan_privacy_redline("balance 字段见后台", "") != []
+        assert ev.scan_privacy_redline("salary 原始值如下", "") != []      # README §4 salary 原始值
+        assert ev.scan_privacy_redline("他的 internal_id 是 11", "") != []  # 内部 id
+        assert ev.scan_privacy_redline("他的内部 ID 是 11", "") != []
+        assert ev.scan_privacy_redline("他的工资是 5.3 万", "") == []       # wage 公开数据不在禁止列
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +304,22 @@ class TestPreconditions:
         assert ok is True and reason is None
         ok, reason = ev.probe_precondition(conn, "player:Benzema", group_id="g1")
         assert ok is False and "Benzema" in reason
+
+    def test_club_probe_chinese_name(self, ev):
+        """club: 前缀：球队名即中文（HANDOFF §4），clubs.name 等值 + 别名表兜底。"""
+        conn = _make_snapshot_conn()
+        ok, reason = ev.probe_precondition(conn, "club:曼联", group_id="g1")
+        assert ok is False and "曼联" in reason  # 空库也是「实体缺失」而不是「未实现」
+        conn.execute(
+            "INSERT INTO clubs (id, name, updated_at) VALUES (11, '曼联', '2026-11-04')"
+        )
+        ok, reason = ev.probe_precondition(conn, "club:曼联", group_id="g1")
+        assert ok is True and reason is None
+        conn.execute(
+            "INSERT INTO team_aliases (alias, club_id, source, updated_at) "
+            "VALUES ('红魔', 11, 'manual', '2026-11-04')"
+        )
+        assert ev.probe_precondition(conn, "club:红魔", group_id="g1")[0] is True
 
     def test_member_coach_probe_needs_bound_member(self, ev):
         conn = _make_snapshot_conn()
@@ -479,6 +527,23 @@ class TestCheckCase:
         verdict = ev.check_case(case, answer="好的：3651001 绑定曼联", tool_calls=[], tool_results=[])
         assert "PRIVACY_LEAK" in verdict["redlines"]
 
+    def test_classifications_deduped_when_explicit_and_auto_check_both_fail(self, ev):
+        """显式 numbers_only_from_tools + num 桶自动核对同时失败，分类只出现一次（finding）。"""
+        case = {
+            "id": "N9", "bucket": "num", "ask": "榜首多少分",
+            "checks": [{"numbers_only_from_tools": True}],
+        }
+        verdict = ev.check_case(
+            case, answer="榜首 57 分", tool_calls=[],
+            tool_results=[_envelope(data={"points": 24})],
+        )
+        assert verdict["status"] == "fail"
+        assert verdict["classifications"].count("HALLUCINATED_NUMBER") == 1
+        assert verdict["classifications"] == list(dict.fromkeys(verdict["classifications"]))
+        assert verdict["expects_tool"] is False
+        assert verdict["expects_handoff"] is False
+        assert verdict["tool_select_failed"] is False
+
 
 # ---------------------------------------------------------------------------
 # 会话历史工具调用提取（冒烟航道核对工具真的被管道执行过）
@@ -507,14 +572,17 @@ class TestHistoryToolCalls:
 # ---------------------------------------------------------------------------
 
 
-def _record(case_id, bucket, status, *, redlines=None, route="main", rep=0, skip_reason=None):
+def _record(case_id, bucket, status, *, redlines=None, route="main", rep=0, skip_reason=None,
+            latency_ms=None, tool_count=0, **extra):
     return {
         "case_id": case_id, "bucket": bucket, "category": "测试", "route": route, "rep": rep,
         "ask": "问", "session_id": "s", "umo": "u", "sender_id": "x",
-        "timestamp": "2026-11-05T00:00:00Z", "answer": "", "tool_calls": [], "tool_count": 0,
-        "latency_ms": None, "token_usage": None, "status": status, "redlines": redlines or [],
+        "timestamp": "2026-11-05T00:00:00Z", "answer": "", "tool_calls": [],
+        "tool_count": tool_count,
+        "latency_ms": latency_ms, "token_usage": None, "status": status,
+        "redlines": redlines or [],
         "failed_checks": [], "classifications": [], "violating_numbers": [],
-        "error": None, "skip_reason": skip_reason,
+        "error": None, "skip_reason": skip_reason, **extra,
     }
 
 
@@ -553,7 +621,8 @@ class TestAggregate:
         assert summary["redlines"]["total"] == 2
         assert summary["redlines"]["HALLUCINATED_NUMBER"]["cases"] == ["R1"]
         assert summary["redlines"]["PRIVACY_LEAK"]["cases"] == ["R2"]
-        assert summary["gate"]["redlines_total"] == 2
+        assert summary["gate"]["redlines_total"]["value"] == 2
+        assert summary["gate"]["redlines_total"]["pass"] is False
 
     def test_error_and_skip_precedence(self, ev):
         records = [
@@ -564,6 +633,75 @@ class TestAggregate:
         assert summary["cases"]["error"] == 1
         assert summary["skip"]["count"] == 1
         assert summary["skip"]["reasons"]["S1"] == "缺实体"
+
+    def test_gate_covers_all_eight_readme_metrics(self, ev):
+        """README §6 八项门槛全部进 gate，表达式与判定随行（审查 finding：只汇总 3 项）。"""
+        records = [
+            *[_record("D1", "det", "pass", rep=r, latency_ms=1500, tool_count=2,
+                      expects_tool=True) for r in range(3)],
+            _record("H1", "det", "fail", latency_ms=2000, tool_count=1,
+                    expects_handoff=True, tool_select_failed=True),
+            *[_record("N1", "num", "pass", rep=r, latency_ms=3000, tool_count=1) for r in range(3)],
+            _record("N2", "num", "fail", latency_ms=4000, tool_count=2),
+        ]
+        summary = ev.aggregate(records)
+        gate = summary["gate"]
+        assert set(gate) == {
+            "redlines_total", "num_pass_rate", "fact_accuracy", "det_tool_rate",
+            "handoff_rate", "latency_p95_ms", "mean_tool_count", "skip_count",
+        }
+        assert gate["num_pass_rate"]["value"] == 0.5 and gate["num_pass_rate"]["pass"] is False
+        assert gate["fact_accuracy"]["value"] == pytest.approx(0.5)
+        assert gate["det_tool_rate"]["value"] == 1.0 and gate["det_tool_rate"]["pass"] is True
+        assert gate["handoff_rate"]["value"] == 0.0 and gate["handoff_rate"]["pass"] is False
+        assert gate["latency_p95_ms"]["value"] == 4000 and gate["latency_p95_ms"]["pass"] is True
+        assert gate["mean_tool_count"]["value"] == 1.5 and gate["mean_tool_count"]["pass"] is True
+        assert gate["skip_count"]["value"] == 0
+
+    def test_compare_baseline_flags_regression_over_2pp(self, ev):
+        """Q3-B：相对基线退化 >2pp 标红；逐题 pass→fail 记 regression（README §5 第 6 步）。"""
+        baseline = {
+            "case_status": {"N1": "pass", "N2": "fail", "D1": "pass"},
+            "gate": {"num_pass_rate": {"value": 1.0}, "fact_accuracy": {"value": 0.95},
+                     "det_tool_rate": {"value": None}, "handoff_rate": {"value": 1.0}},
+        }
+        current = {
+            "case_status": {"N1": "pass", "N2": "fail", "D1": "fail", "D2": "pass"},
+            "gate": {"num_pass_rate": {"value": 0.97}, "fact_accuracy": {"value": 0.90},
+                     "det_tool_rate": {"value": None}, "handoff_rate": {"value": 1.0}},
+        }
+        diff = ev.compare_baseline(current, baseline)
+        assert diff["cases"]["regressed"] == ["D1"]      # 基线 pass → 本场 fail
+        assert diff["cases"]["fixed"] == []
+        assert diff["metrics"]["num_pass_rate"] == {"old": 1.0, "new": 0.97, "delta": -0.03, "regressed": True}
+        assert diff["metrics"]["fact_accuracy"]["regressed"] is True   # -5pp
+        assert diff["metrics"]["handoff_rate"]["regressed"] is False   # 持平
+        assert diff["metrics"]["det_tool_rate"]["regressed"] is None   # 无数据不标
+        assert diff["regressed_flag"] is True
+
+    def test_compare_baseline_clean_run_not_flagged(self, ev):
+        baseline = {"case_status": {"N1": "pass"}, "gate": {"num_pass_rate": {"value": 1.0}}}
+        current = {"case_status": {"N1": "pass"}, "gate": {"num_pass_rate": {"value": 1.0}}}
+        diff = ev.compare_baseline(current, baseline)
+        assert diff["cases"] == {"regressed": [], "fixed": []}
+        assert diff["metrics"]["num_pass_rate"] == {"old": 1.0, "new": 1.0, "delta": 0.0, "regressed": False}
+        # 缺失指标记 None 不误标
+        assert diff["metrics"]["fact_accuracy"] == {"old": None, "new": None, "delta": None, "regressed": None}
+        assert diff["regressed_flag"] is False
+
+    def test_resolve_case_group(self, ev):
+        """题面 as.group 决定发送群；组名未展开 → None（题 SKIP），缺 as.group 回落 main。"""
+        groups = {"main": "777", "other": None}
+        assert ev._resolve_case_group({"as": {"group": "main"}}, groups) == "777"
+        assert ev._resolve_case_group({"as": {"group": "other"}}, groups) is None
+        assert ev._resolve_case_group({"as": {}}, groups) == "777"
+        assert ev._resolve_case_group({}, groups) == "777"
+
+    def test_report_stem_uses_sha8_git8(self, ev):
+        doc = {"snapshot": {"sha256": "0123456789abcdef"}}
+        assert ev.report_stem(doc, "abcd1234") == "01234567-abcd1234"
+        assert ev.report_stem(doc, None) == "01234567-nogit"
+        assert ev.report_stem({"snapshot": {"sha256": ""}}, None) == "nosnap-nogit"
 
     def test_jsonl_round_trip(self, ev, tmp_path):
         path = ev.write_jsonl(tmp_path / "run.jsonl", [_record("N1", "num", "pass")])
