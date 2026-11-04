@@ -97,4 +97,4 @@ python -m pytest tests/unit -q
 
 ## License
 
-MIT，见 [LICENSE](LICENSE)。
+AGPL-3.0，见 [LICENSE](LICENSE)。
