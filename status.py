@@ -4,6 +4,8 @@
 供 main.py 与 tests/unit 直接调用（Q15-A 默认空转的落地）。
 """
 
+import re
+
 PLUGIN_NAME = "astrbot_plugin_whleague_advisor"
 PLUGIN_VERSION = "0.1.0"
 
@@ -31,8 +33,20 @@ MSG_READY = (
 
 
 def _normalize(enabled_groups, club_base_url):
-    """把任意传入配置收敛成（群号 str 列表, 去空白后的 url str）。"""
-    groups = [str(g) for g in (enabled_groups or []) if str(g).strip()]
+    """把任意传入配置收敛成（群号 str 列表, 去空白后的 url str）。
+
+    enabled_groups 容错：schema 声明为 list，但用户手改 JSON/WebUI 可能存成
+    字符串（如 "123456789" 或逗号分隔串）——按分隔符拆分，绝不逐字符迭代。
+    """
+    if enabled_groups is None:
+        raw_groups = []
+    elif isinstance(enabled_groups, str):
+        raw_groups = re.split(r"[,，、\s]+", enabled_groups)
+    elif isinstance(enabled_groups, (list, tuple, set)):
+        raw_groups = list(enabled_groups)
+    else:
+        raw_groups = [enabled_groups]
+    groups = [str(g) for g in raw_groups if str(g).strip()]
     base_url = str(club_base_url or "").strip()
     return groups, base_url
 
