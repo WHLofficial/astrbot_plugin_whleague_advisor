@@ -321,6 +321,12 @@ class TestSourceParsersOnFixtures:
         assert len(parsed["players"]) == 3
         assert parsed["players"][0]["status"] == "normal"
 
+    def test_empty_string_cursor_is_exhausted(self):
+        """nextCursor="" 与 null 同视：防止上游契约漂移把同步空翻到保险丝。"""
+        assert sources_club.parse_players({"players": [], "nextCursor": ""})["next_cursor"] is None
+        assert sources_club.parse_players({"players": [], "nextCursor": None})["next_cursor"] is None
+        assert sources_club.parse_players({"players": [], "nextCursor": "42"})["next_cursor"] == "42"
+
     def test_roster_line_two_and_three_segments(self):
         assert sources_club.parse_roster_line("Erling Haaland|14|239085") == {
             "display_name": "Erling Haaland", "club_id": 14, "fc_id": 239085,

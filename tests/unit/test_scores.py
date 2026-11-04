@@ -169,15 +169,25 @@ class TestValuationGolden:
 
 
 class TestSpecialStates:
-    def test_trainee_uses_activation_fee(self):
+    def test_trainee_uses_activation_formula(self):
+        """设计 §5.3 明文公式：activationFee(rc, None, t) + 5 —— 训练营双固定 RC=5 → 5+5=10。"""
         model = make_model()
         row = scores.evaluate_player(player(status="trainee", release_fee=5, wage=0.75), None, {}, model)
         assert row["fair_source"] == "trainee_activation"
-        assert row["fair_mid"] == 5.0
+        assert row["fair_mid"] == 10.0
         assert row["deal_low"] is None and row["deal_high"] is None
         assert "trainee" in row["flags"]
         # 训练营不给成年估价的 RC 约束语义
         assert row["rc_flag"] is None and row["rc_gap"] is None
+
+    def test_trainee_missing_rc_falls_back_to_fixed_release_fee(self):
+        """上游 rc 缺失时按双固定 TRAINEE_RELEASE_FEE=5 兜底，仍得 10。"""
+        model = make_model()
+        row = scores.evaluate_player(
+            player(status="trainee", release_fee=0, wage=0.75), None, {}, model
+        )
+        assert row["fair_mid"] == 10.0
+        assert row["fair_low"] == row["fair_high"] == 10.0
 
     def test_free_agent_no_deal(self):
         """rc=0：不用 deal，只用 fair（曲线可用时）。"""

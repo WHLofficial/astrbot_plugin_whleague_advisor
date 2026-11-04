@@ -101,6 +101,22 @@ class TestExpectedWage:
         assert exp9 == pytest.approx(4.25, abs=0.02)
 
 
+class TestTraineeActivationCost:
+    def test_design_53_formula_sums_to_ten(self):
+        """设计 §5.3：activationFee(rc, None, t) + TRAINEE_ACTIVATION_FEE=5。
+
+        训练营双固定（RC=5、无保护期）→ activationFee 1 倍 = 5 → 5 + 5 = 10。
+        """
+        assert formula.activation_fee(5, None, 0) == 5
+        assert formula.trainee_activation_cost(5) == 10.0
+        assert formula.trainee_activation_cost(None) == 10.0  # rc 缺失按双固定兜底
+        assert formula.trainee_activation_cost(0) == 10.0
+
+    def test_follows_rc_if_upstream_deviates_from_dual_fixed(self):
+        """公式不写死 5：若上游 rc 变化（如 10），成本跟随公式 → 10+5=15。"""
+        assert formula.trainee_activation_cost(10) == 15.0
+
+
 class TestAgeAdjustments:
     def test_benzema_age_37_gets_minus_10(self):
         adj = formula.age_adjustments(37, 85, 85)

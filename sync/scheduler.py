@@ -1,8 +1,10 @@
 """同步调度器：单进程 asyncio 单写者（设计 §4.4 + §8.1）。
 
-* 顺序 season → clubs → standings → fixtures，由 sync.jobs.run_full_sync 保证；
-* 分层频率（设计 §4.2）：热 5 分钟（season/standings/fixtures）、温 15 分钟（clubs），
-  可经 _conf_schema 的 sync_hot/warm_minutes 覆盖；
+* 顺序 season → clubs → players → player_attrs → market → scores → roster →
+  standings → fixtures，由 sync.jobs.run_full_sync 保证；
+* 分层频率（设计 §4.2）：热 5 分钟（season/standings/fixtures/market）、
+  温 15 分钟（clubs/players）、冷 60 分钟（player_attrs/scores/roster），
+  可经 _conf_schema 的 sync_hot/warm/cold_minutes 覆盖；
 * 单写者：run_cycle 全程持有 asyncio.Lock，前一轮未结束则后一轮等锁串行；
 * 失败退避（设计 §8.1）：连续失败 30s → 2min → 10min，成功后清零；
   失败本身已由 run_job 落 meta 降级标记，这里只管何时重试；

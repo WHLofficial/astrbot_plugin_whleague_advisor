@@ -23,6 +23,7 @@ YOUNG_BLEND_AGE = 25  # negotiation-context.ts:80 默认成长年龄
 
 TRAINEE_ACTIVATION_FEE = 5  # market-rules.ts:8 训练营激活固定 5m
 TRAINEE_WAGE = 0.75  # negotiation-rules.ts:5 训练营双固定工资
+TRAINEE_RELEASE_FEE = 5  # negotiation-rules.ts:5 训练营双固定违约金
 
 LISTING_ABSOLUTE_FLOOR = 1  # market-rules.ts:5 挂牌绝对下限
 
@@ -188,6 +189,20 @@ def expected_wage(level: float, release_fee: float, a: float, b: float, c: float
     只用于 exp_wage / wage_gap 信号，不进价格、不反推 RC 当价值锚（§5.3）。
     """
     return round2(a * (level**b) * (release_fee**c))
+
+
+def trainee_activation_cost(release_fee: float | None) -> float:
+    """学员参考激活成本（设计 §5.3 明文公式）：activationFee(rc, None, t) + TRAINEE_ACTIVATION_FEE。
+
+    训练营合同双固定（negotiation-rules.ts:5）：RC 恒 5m、无保护期（protection_ticks=NULL，
+    bypass-rules.ts:41 isProtected 对 None 恒 False）→ activationFee 恒 1 倍即 RC 本体；
+    上游 rc 缺失/非正数按双固定的 TRAINEE_RELEASE_FEE 兜底（当前数据恒得 5 + 5 = 10）。
+    ⚠️ 口径差异已上报：平台实现（activations.ts:92-95）是三元分支，isTrainee 直接收
+    固定 TRAINEE_ACTIVATION_FEE=5m、不走求和；设计文档为唯一事实源（285/307 两行明文求和），
+    本插件按设计公式实现，待用户裁决是否回改为平台口径。
+    """
+    base = release_fee if release_fee is not None and release_fee > 0 else TRAINEE_RELEASE_FEE
+    return activation_fee(base, None, 0) + TRAINEE_ACTIVATION_FEE
 
 
 # ---- 年龄/潜力小幅校正（§5.3）----

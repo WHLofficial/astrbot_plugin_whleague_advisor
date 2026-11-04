@@ -190,10 +190,12 @@ def parse_players(payload: Any) -> dict:
     """/api/players → {players: [...], next_cursor: str|None}。
 
     必填 id/name/status；其余契约字段缺失按 None 落库（列可空，估价按缺失处理）。
+    nextCursor 空串与 null 同样视为「翻页穷尽」（上游现返回 null，空串防将来
+    契约漂移把同步空翻到保险丝，sync.jobs.PLAYERS_MAX_PAGES）。
     """
     data = require_mapping(payload, "players")
     raw = require_list(require_key(data, "players", "players"), "players.players")
-    cursor = optional_str(data, "nextCursor", "players")
+    cursor = optional_str(data, "nextCursor", "players") or None
     players = []
     for index, item in enumerate(raw):
         where = f"players[{index}]"

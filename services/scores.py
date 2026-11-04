@@ -19,7 +19,6 @@ from ..db import dao
 from . import fitting
 from .formula import (
     COMP_DEFAULT_PARAMS,
-    TRAINEE_ACTIVATION_FEE,
     WAGE_DEFAULT_PARAMS,
     ability_level,
     age_adjustments,
@@ -27,6 +26,7 @@ from .formula import (
     expected_wage,
     image_role,
     role_group,
+    trainee_activation_cost,
 )
 from .formula import PROFILE_ATTRS
 
@@ -232,7 +232,10 @@ def evaluate_player(player: dict, attrs: dict | None, baseline: dict, model: Mod
     role_n = None
     adjustments: list[dict] = []
     if player.get("status") == "trainee":
-        fair_low = fair_mid = fair_high = float(TRAINEE_ACTIVATION_FEE)
+        # 设计 §5.3 明文公式：activationFee(rc, protection_ticks, ticks) + TRAINEE_ACTIVATION_FEE=5
+        # （训练营双固定 RC=5、无保护期 → activationFee 1 倍；公式细节见 formula.trainee_activation_cost）
+        cost = trainee_activation_cost(rc)
+        fair_low = fair_mid = fair_high = float(cost)
         fair_source = "trainee_activation"
         confidence = "low"
         role_n = 0
