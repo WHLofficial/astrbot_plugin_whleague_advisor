@@ -10,7 +10,19 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
 
-v0.4.0 工具层（阶段 4，本次）：
+v0.5.0 人设与子 agent（阶段 5，本次）：
+- 配置齐备时动态注册两个 handoff 子 agent（设计 §7.1 方案 B / §4.8）：
+  transfer_to_whl_advisor（只带 8 个 whl_*，system_prompt = prompt/advisor.md）与
+  transfer_to_real_football_expert（只带 web_search_tavily，system_prompt =
+  prompt/coach.md + 宿主 verify-realtime-info/SKILL.md 正文——子 agent 不继承 skills）；
+- handoff 单向（子 agent 不能再转交）：subagents.assert_one_way 拒绝白名单含
+  transfer_to_* 的 spec；注册后覆写 handler_module_path 为本插件模块，
+  插件卸载/重载时随插件一起清理（star_manager 按 module_prefix 移除）；
+- 空转/数据层失败时同样不注册子 agent；real_football_enabled=false 关闭现实足球子 agent。
+- prompt/dafeiyu.md 是大肥鱼主 agent 的宿主侧落点（tools/skills 白名单 + 闲聊零工具
+  调用），由管理员人工应用，插件不做运行时注入（设计 §7.1：人设零污染）。
+
+v0.4.0 工具层（阶段 4）：
 - 8 个 whl_* 工具注册为 AstrBot LLM FunctionTool（@filter.llm_tool，主 agent 可见；
   注册路径对照 AstrBot tests/fixtures/plugins/fixture_plugin.py 与
   star_manager.py 的 llm_tool 装配：装饰器在类定义时进全局 FunctionToolManager，
@@ -33,11 +45,15 @@ from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star
 
 from .status import PLUGIN_NAME, PLUGIN_VERSION, build_status_reply, is_idle
+from .subagents import HANDOFF_TOOL_NAMES
 
 TOOL_METHOD_NAMES = (
     "whl_league_brief", "whl_team_brief", "whl_player_lookup", "whl_market_board",
     "whl_player_value", "whl_compare_players", "whl_match_lookup", "whl_rules_lookup",
 )
+
+# 空转/数据层失败时统一停用的名字：8 个 whl_* 工具 + 2 个 handoff（若已注册）。
+DEACTIVATABLE_TOOL_NAMES = TOOL_METHOD_NAMES + HANDOFF_TOOL_NAMES
 
 
 class WhleagueAdvisorPlugin(Star):
@@ -53,12 +69,16 @@ class WhleagueAdvisorPlugin(Star):
         """后台同步调度器（配置齐备时创建；空转时为 None）。"""
         self._tool_ctx = None
         """工具层上下文（配置齐备时创建；空转时为 None，工具已停用）。"""
+        self._data_dir = None
+        """插件数据目录（配置齐备时记录；用于定位宿主 skill 文件，见 subagents.locate_skill_file）。"""
+        self._subagent_tool_names: tuple[str, ...] = ()
+        """已注册的 handoff 工具名（配置齐备时注册；空转/失败时为空）。"""
 
     # ---- 生命周期 ----
 
     async def initialize(self) -> None:
         if is_idle(self.config.get("enabled_groups"), self.config.get("club_base_url")):
-            logger.info("%s v%s 已加载：未配置，保持空转（停用全部 whl_* 工具）", PLUGIN_NAME, PLUGIN_VERSION)
+            logger.info("%s v%s 已加载：未配置，保持空转（停用全部 whl_* 工具与子 agent）", PLUGIN_NAME, PLUGIN_VERSION)
             await self._set_tools_active(False)
             return
         try:
@@ -72,6 +92,7 @@ class WhleagueAdvisorPlugin(Star):
             await self._set_tools_active(False)
             return
         await self._set_tools_active(True)
+        await self._register_subagents()
 
     async def _start_data_layer(self) -> None:
         """建库、跑迁移、装配源客户端与工具上下文、启动后台同步。失败由 initialize 兜底。"""
@@ -90,6 +111,7 @@ class WhleagueAdvisorPlugin(Star):
         from .tools.context import ToolContext
 
         data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        self._data_dir = data_dir
         self._conn = dao.connect(data_dir / "advisor.db")
         applied = migrations.run_migrations(self._conn)
         logger.info(
@@ -166,16 +188,18 @@ class WhleagueAdvisorPlugin(Star):
             self._conn.close()
             self._conn = None
         self._tool_ctx = None
+        self._data_dir = None
+        self._subagent_tool_names = ()
 
     # ---- 工具注册/停用（Q15-A：未配置不注册）----
 
     async def _set_tools_active(self, active: bool) -> None:
-        """批量启/停 8 个工具；假环境/旧版本无此 API 时静默跳过。
+        """批量启/停 8 个 whl_* 工具与 2 个 handoff（未注册的名字返回 False，无害）。
 
         用 Context 的包装方法（context.py:375/404，内部转 FunctionToolManager 并
         维护 inactivated_llm_tools 持久化），不用裸 manager 以免状态不一致。
         """
-        for name in TOOL_METHOD_NAMES:
+        for name in DEACTIVATABLE_TOOL_NAMES:
             try:
                 if active:
                     await self.context.activate_llm_tool_async(name)
@@ -185,6 +209,103 @@ class WhleagueAdvisorPlugin(Star):
                 return  # 组件级测试假环境 / 旧版 AstrBot：无此 API
             except Exception:  # noqa: BLE001 - 单个工具启停失败不拖垮插件
                 logger.warning("切换工具 %s → active=%s 失败", name, active)
+
+    # ---- 子 agent handoff（设计 §7.1 方案 B / §4.8；HANDOFF §7 阶段 5）----
+
+    def _flag(self, key: str, default: bool) -> bool:
+        """布尔配置容错：WebUI 可能存成字符串（"false"/"0"/"off" 均视为关）。"""
+        value = self.config.get(key)
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in ("", "0", "false", "no", "off", "否", "关")
+        return bool(value)
+
+    def _coach_skill_body(self) -> str | None:
+        """读宿主 verify-realtime-info/SKILL.md 正文（子 agent 不继承 skills，必须自带）。"""
+        from .subagents import load_skill_body, locate_skill_file
+
+        if self._data_dir is None:
+            return None
+        try:
+            return load_skill_body(locate_skill_file(self._data_dir))
+        except (TypeError, ValueError):
+            return None
+
+    async def _register_subagents(self) -> None:
+        """动态注册两个 handoff 子 agent；失败只降级告警，不拖垮数据层与 whl_* 工具。
+
+        - transfer_to_whl_advisor：tools = 8 个 whl_*，system_prompt = prompt/advisor.md；
+        - transfer_to_real_football_expert：tools = web_search_tavily，system_prompt =
+          prompt/coach.md + 宿主 skill 正文（缺失走 subagents 内置降级指引）；
+        - handoff 单向（子 agent 不能再转交）：subagents.assert_one_way 在注册前拒绝
+          白名单含 transfer_to_* 的 spec；
+        - 注册后覆写 handler_module_path 为本插件模块（HandoffTool 实例的 __module__
+          指向 astrbot.core.agent.handoff，不覆写的话插件卸载清不掉它们）。
+        """
+        import inspect
+
+        from . import subagents
+
+        skill_body = self._coach_skill_body()
+        if skill_body is None:
+            logger.warning(
+                "%s：宿主 verify-realtime-info/SKILL.md 不可读，现实足球子 agent 使用内置降级指引（设计 §4.8）",
+                PLUGIN_NAME,
+            )
+        try:
+            specs = subagents.build_specs(
+                whl_tool_names=TOOL_METHOD_NAMES,
+                real_football_enabled=self._flag("real_football_enabled", True),
+                coach_skill_body=skill_body,
+            )
+        except Exception:
+            logger.exception("%s：子 agent spec 构建失败，不注册 handoff", PLUGIN_NAME)
+            return
+        try:
+            from astrbot.core.agent.agent import Agent
+            from astrbot.core.agent.handoff import HandoffTool
+        except ImportError:
+            logger.warning(
+                "%s：当前 AstrBot 无子 agent API（astrbot.core.agent.handoff），"
+                "跳过 handoff 注册；whl_* 工具保持主 agent 直调模式",
+                PLUGIN_NAME,
+            )
+            return
+        try:
+            handoffs = [
+                HandoffTool(
+                    agent=Agent(
+                        name=spec.name,
+                        instructions=spec.instructions,
+                        tools=list(spec.tools),
+                    ),
+                    tool_description=spec.public_description,
+                )
+                for spec in specs
+            ]
+            result = self.context.add_llm_tools(*handoffs)
+            if inspect.isawaitable(result):
+                await result
+            plugin_module_path = type(self).__module__
+            for handoff in handoffs:
+                handoff.handler_module_path = plugin_module_path
+        except Exception:
+            logger.exception("%s：handoff 工具注册失败，联赛问答降级为主 agent 直调 whl_*", PLUGIN_NAME)
+            return
+        self._subagent_tool_names = tuple(spec.handoff_name for spec in specs)
+        # 自愈：若历史停用状态残留（inactivated_llm_tools 持久化），重新注册后显式拉回激活；
+        # 新注册工具本就默认 active=True（func_tool_manager.py:243），失败无害。
+        for name in self._subagent_tool_names:
+            try:
+                await self.context.activate_llm_tool_async(name)
+            except Exception:  # noqa: BLE001 - 旧版无此 API / 插件被禁用时不影响注册结果
+                break
+        logger.info(
+            "%s：已注册子 agent handoff（单向，子 agent 不能再转交）：%s",
+            PLUGIN_NAME,
+            ", ".join(self._subagent_tool_names),
+        )
 
     # ---- 群成员缓存刷新（§4.7：每群每 10 分钟）----
 
@@ -317,7 +438,7 @@ class WhleagueAdvisorPlugin(Star):
         回答时逐字引用返回的规则原文（数字不要改写）；规则库没有的主题要明确说没有。
 
         Args:
-            question(string): 规则问题，如「转会窗什么时候关」「激活要多少钱」。
+            question(string): 规则问题，如「激活要多少钱」「保护期是多久」。
         """
         return await self._call_tool("whl_rules_lookup", event, kwargs)
 

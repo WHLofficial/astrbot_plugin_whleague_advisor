@@ -58,5 +58,11 @@
     "hint": "滑动窗口限流，默认每人 10 次/10 分钟；超出返回 RATE_LIMITED。",
     "type": "int",
     "default": 10
+  },
+  "real_football_enabled": {
+    "description": "启用现实足球子 agent",
+    "hint": "关闭后不注册 transfer_to_real_football_expert（现实/真实足球话题不再由子 agent 查公开资料）；联赛子 agent 不受影响。",
+    "type": "bool",
+    "default": true
   }
 }

@@ -2,7 +2,7 @@
 
 WHL 联赛只读问答顾问插件（AstrBot v4）：群里有人问联赛积分、球队、球员、转会市场或身价参考时，主模型调用本插件注册的 `whl_*` 工具作答，回答中的每个数字都能对回工具结果。
 
-> 当前为 v0.4.0：插件壳、`/whl状态` 状态指令 + 数据层（本地 SQLite，九个同步任务：赛季/俱乐部/球员/属性/市场/估价模型/名册/积分榜/赛程，失败降级保留旧值）+ 8 个 `whl_*` 问答工具（LLM FunctionTool）、`advice/` 估价纯函数、群成员缓存与绑定客户端、限流与入参守卫、统一错误码。
+> 当前为 v0.5.0：插件壳、`/whl状态` 状态指令 + 数据层（本地 SQLite，九个同步任务：赛季/俱乐部/球员/属性/市场/估价模型/名册/积分榜/赛程，失败降级保留旧值）+ 8 个 `whl_*` 问答工具（LLM FunctionTool）、`advice/` 估价纯函数、群成员缓存与绑定客户端、限流与入参守卫、统一错误码 + 两个 handoff 子 agent（联赛顾问 / 现实足球）。
 
 ## 默认空转（重要）
 
@@ -42,6 +42,21 @@ astrbot plugin install https://github.com/WHLofficial/astrbot_plugin_whleague_ad
 | `bindings_base_url` | string | `""` | 平台只读绑定端点 `POST /api/internal/bot/bindings` 的站点基础地址；留空 = 未启用 |
 | `rate_group_limit` | int | `30` | 每群查询上限（次/10 分钟），超出返回 `RATE_LIMITED` |
 | `rate_user_limit` | int | `10` | 每人查询上限（次/10 分钟），超出返回 `RATE_LIMITED` |
+| `real_football_enabled` | bool | `true` | 关闭后不注册现实足球子 agent（联赛子 agent 不受影响） |
+
+## 子 agent（handoff，配置齐备时自动注册）
+
+主 agent 不需要改人设即可接入（设计取向：人设零污染）：
+
+| handoff 工具 | 职责 | 工具白名单 | system_prompt 来源 |
+|---|---|---|---|
+| `transfer_to_whl_advisor` | 联赛数据问答（积分/赛程/球员/市场/估价/规则） | 8 个 `whl_*` | `prompt/advisor.md`（数据纪律 + 闲聊零工具调用） |
+| `transfer_to_real_football_expert` | 现实/真实足球话题（公开资料） | `web_search_tavily` | `prompt/coach.md` + 宿主 `data/skills/verify-realtime-info/SKILL.md` 正文 |
+
+- 注册发生在插件启动且配置齐备时（`context.add_llm_tools` 动态注册 `HandoffTool`）；空转、数据层启动失败时一律不注册。
+- **handoff 单向**：子 agent 的工具白名单只含上表工具，不含任何 `transfer_to_*`——子 agent 不能再转交。
+- 宿主 `verify-realtime-info/SKILL.md` 不可读时，现实足球子 agent 自动使用内置降级指引（先搜索再回答、给来源），日志记 warning。
+- 主 agent 侧的白名单落点（**宿主侧人工应用，插件不做运行时注入**）：`prompt/dafeiyu.md` 写明 persona 的 `tools` 应排除全部 `whl_*`、`skills` 应剔除 `verify-realtime-info`，以及「日常闲聊零工具调用、不转交」的人设约束。
 
 ## 需自备数据源
 
