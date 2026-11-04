@@ -331,8 +331,8 @@ class WhleagueAdvisorPlugin(Star):
                 "NOT_BOUND", "插件未配置（未启用群/未配数据源），联赛问答不可用",
                 hint="请管理员在 WebUI 配置 enabled_groups 与 club_base_url",
             ))
-        from .facade import call_tool
-        from .context import CallContext
+        from .tools.context import CallContext
+        from .tools.facade import call_tool
 
         return await call_tool(ctx, name, args, CallContext.from_event(event))
 

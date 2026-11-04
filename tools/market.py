@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..db import dao
-from ..guard.errors import NO_DATA, ToolError, ok_envelope
+from ..guard.errors import BAD_ARG, NO_DATA, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
 from .resolve import resolve_club, role_group_of
@@ -16,8 +16,9 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     position = args.get("position")
     role = role_group_of(position) if position else None
     if position and role is None:
+        # 非法位置是入参错误不是数据缺失：BAD_ARG 让模型自我纠正（guard.errors BAD_ARG 语义）
         raise ToolError(
-            NO_DATA,
+            BAD_ARG,
             f"位置 {position} 不在联赛位置体系里",
             hint="用平台位置名：GK/CB/RB/LB/CDM/CM/CAM/RM/LM/RW/LW/ST",
         )

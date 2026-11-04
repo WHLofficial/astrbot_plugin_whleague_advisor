@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from ..db import dao
-from ..guard.errors import NO_DATA, ToolError, ok_envelope
+from ..guard.errors import AMBIGUOUS, NO_DATA, NOT_FOUND, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
-from .resolve import resolve_team_arg
+from .resolve import _BindingsDegraded, _club_from_binding, _fetch_bindings, resolve_team_arg
 
 SOURCE = "local_sqlite"
 
@@ -104,33 +104,71 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
 
 
 async def _person_card(ctx: ToolContext, call: CallContext, args: dict) -> dict:
-    """view=person：琛止是谁/执教哪队（§4.7 个人卡，不展开球队数据）。"""
+    """view=person：琛止是谁/执教哪队（§4.7 个人卡：群名片、绑定队、角色）。
+
+    个人卡语义独立于球队解析：成员存在但无绑定时返回 bound=false 的卡片
+    （§4.7 个人卡应含名片/绑定状态），不抛 NOT_BOUND——那是「按人解析球队」
+    （view=team 路径）的反问语义。
+    """
     person = args.get("person") or args.get("team")
     if not person:
         raise _bad_person_arg()
-    resolved = await resolve_team_arg(ctx, call, team=None, person=person, scope="me")
-    person_row = resolved["person"]
-    club = resolved["club"]
-    name = (person_row.get("card") if person_row else None) or person.lstrip("@")
-    data = {"person": name, "via": resolved["via"]}
+    members = ctx.members
+    rows = members.find_by_name(call.group_id or "", person)
+    if not rows:
+        raise ToolError(
+            NOT_FOUND,
+            f"群里没找到「{person.lstrip('@')}」",
+            hint="确认群名片/昵称；如果他是某队教练，直接说队名",
+        )
+    if len(rows) > 1:
+        raise ToolError(
+            AMBIGUOUS,
+            f"群里有 {len(rows)} 个人匹配「{person.lstrip('@')}」",
+            candidates=[
+                {"qq": r.get("qq"), "card": r.get("card") or r.get("nickname")} for r in rows[:3]
+            ],
+        )
+    member = rows[0]
+    caveats: list[str] = []
+    club = None
+    qq = str(member.get("qq") or "")
+    try:
+        bindings = await _fetch_bindings(ctx, call, [qq] if qq else [])
+    except _BindingsDegraded as exc:
+        caveats.append(f"身份服务暂时不可用（{exc}），按本地缓存回答")
+        bindings = {}
+    item = bindings.get(qq)
+    if item and item.get("bound"):
+        club = _club_from_binding(ctx.conn, item)
+    elif member.get("bound") and member.get("club_id"):
+        club = dao.read_club_by_id(ctx.conn, member["club_id"])
+    elif ctx.bindings is not None and getattr(ctx.bindings, "enabled", False):
+        caveats.append("绑定服务在线但该成员未绑定球队")
+
+    name = member.get("card") or member.get("nickname") or person.lstrip("@")
+    data: dict = {"person": name, "via": "coach" if club is not None else "unbound"}
+    if club is not None:
+        data["club"] = {"id": club["id"], "name": club["name"], "tier": club.get("tier")}
+    data["member"] = _person_brief(member)
     coaches = []
     if club is not None:
-        coaches = ctx.members.find_coaches(call.group_id or "", club["id"]) if ctx.members else []
-        data["club"] = {"id": club["id"], "name": club["name"], "tier": club.get("tier")}
-    if person_row is not None:
-        data["member"] = _person_brief(person_row)
-    if len(coaches) > 1:
-        data["coaches"] = [
-            c.get("card") or c.get("nickname") or c.get("qq") for c in coaches
-        ]
-        data["caveat_multi_coach"] = "同一队有多位绑定成员，未区分正教练（§4.7：不猜）"
-    summary = f"{name}：执教 {club['name']}。" if club is not None else f"{name}：暂无球队绑定。"
+        coaches = members.find_coaches(call.group_id or "", club["id"])
+        if len(coaches) > 1:
+            data["coaches"] = [c.get("card") or c.get("nickname") or c.get("qq") for c in coaches]
+            multi_coach = "同一队有多位绑定成员，未区分正教练（§4.7：不猜）"
+            data["caveat_multi_coach"] = multi_coach
+            caveats.append(multi_coach)
+    summary = (
+        f"{name}：执教 {club['name']}。" if club is not None
+        else f"{name}：本群群成员，暂无球队绑定。"
+    )
     return ok_envelope(
         as_of=None,
         source=SOURCE,
         summary=summary,
         data=data,
-        caveats=(resolved["caveats"] or []) + ([data["caveat_multi_coach"]] if data.get("caveat_multi_coach") else []),
+        caveats=caveats,
         hint="要看球队数据用 view=team（默认）",
     )
 

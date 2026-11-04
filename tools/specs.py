@@ -24,7 +24,7 @@ SPECS: dict[str, dict] = {
         "detail": {"type": "bool", "default": False, "desc": "true=完整百分位表"},
     },
     "whl_market_board": {
-        "position": {"type": "string", "desc": "平台位置名过滤"},
+        "position": {"type": "string", "choices": POSITIONS, "desc": "平台位置名过滤"},
         "club": {"type": "string", "desc": "队名过滤"},
         "limit": {"type": "int", "min": 1, "max": 50, "default": 15, "desc": "各列表条数上限"},
     },

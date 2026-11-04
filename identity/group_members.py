@@ -100,6 +100,10 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
+# in-flight 标记（单进程 asyncio：await 交替期间同群并发消息只放一个拉取过去）
+_INFLIGHT: set[str] = set()
+
+
 async def refresh_if_due(
     event,
     store: GroupMembersStore,
@@ -109,8 +113,9 @@ async def refresh_if_due(
 ) -> bool:
     """群成员缓存到期（>TTL）时拉一次 get_group_member_list 并落库。
 
-    返回 True=本次刷新成功 / False=未到期或拉取失败（失败静默降级，调用方加 caveat）。
-    群成员列表 API 可能失败或被风控（§8.4）：任何异常都不外抛。
+    返回 True=本次刷新成功 / False=未到期、已在拉取中或拉取失败（失败静默降级，
+    调用方加 caveat）。群成员列表 API 可能失败或被风控（§8.4）：任何异常都不外抛；
+    同群到期瞬间的并发消息只在途一次（in-flight 标记），避免连发触发风控。
     """
     now_fn = now_fn or (lambda: datetime.now(timezone.utc))
     group_id = str(getattr(event, "group_id", "") or "")
@@ -120,20 +125,26 @@ async def refresh_if_due(
     now = now_fn()
     if last is not None and now - last < timedelta(seconds=ttl_seconds):
         return False
+    if group_id in _INFLIGHT:
+        return False  # 同群已有一条拉取在途，不重复打 API
     bot = getattr(event, "bot", None)
     if bot is None or not hasattr(bot, "call_action"):
         return False
+    _INFLIGHT.add(group_id)
     try:
-        raw = await bot.call_action("get_group_member_list", group_id=int(group_id))
-    except Exception:  # noqa: BLE001 - 降级为「只认当前发送者 + 显式队名」
-        return False
-    members = []
-    for item in raw or []:
-        qq = item.get("user_id") or item.get("qq")
-        if qq is None:
-            continue
-        members.append({"qq": str(qq), "card": item.get("card"), "nickname": item.get("nickname")})
-    if not members:
-        return False
-    store.replace_members(group_id, members, now.isoformat(timespec="seconds"))
-    return True
+        try:
+            raw = await bot.call_action("get_group_member_list", group_id=int(group_id))
+        except Exception:  # noqa: BLE001 - 降级为「只认当前发送者 + 显式队名」
+            return False
+        members = []
+        for item in raw or []:
+            qq = item.get("user_id") or item.get("qq")
+            if qq is None:
+                continue
+            members.append({"qq": str(qq), "card": item.get("card"), "nickname": item.get("nickname")})
+        if not members:
+            return False
+        store.replace_members(group_id, members, now.isoformat(timespec="seconds"))
+        return True
+    finally:
+        _INFLIGHT.discard(group_id)

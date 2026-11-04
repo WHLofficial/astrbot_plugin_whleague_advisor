@@ -10,6 +10,8 @@ AstrBot 注册路径（源码对照，astrbot 4.28.0）：
 （类型映射后必须 ∈ SUPPORTED_TYPES），未安装 docstring_parser 时跳过（CI 兼容）。
 """
 
+import asyncio
+import json
 import re
 
 import pytest
@@ -145,3 +147,70 @@ def test_tool_descriptions_mention_boundary_and_hint():
     assert "不能说「官方身价」" in value_doc  # 描述里是禁令，不是产出
     compare_doc = getattr(plugin_cls, "whl_compare_players").__doc__
     assert "本联赛" in compare_doc
+
+
+# ---- 端到端：经插件实例方法调用（AstrBot 真实调用路径，惰性导入必须可解析）----
+
+
+class _FakeContext:
+    """最小 Context：_set_tools_active 会尝试调 activate/deactivate（应被容忍）。"""
+
+    def __getattr__(self, name):
+        async def _noop(*args, **kwargs):
+            return False
+
+        return _noop
+
+
+class _FakeEvent:
+    def __init__(self, group_id="10001", sender="999"):
+        self._group_id, self._sender = group_id, sender
+
+    def get_group_id(self):
+        return self._group_id
+
+    def get_sender_id(self):
+        return self._sender
+
+
+_SHARED = {"conn": None}
+
+
+def _plugin_with_tool_ctx():
+    """插件实例 + 真实 ToolContext（seeded 全量库），复现 AstrBot 装载后的调用形态。"""
+    main_mod = _load_main()
+    plugin = main_mod.WhleagueAdvisorPlugin(_FakeContext(), {})
+    # 复用 test_tools 的全量种子库与上下文装配（同一份 fixtures 回放；模块级共享一次同步）
+    from test_tools import build_tool_ctx, seeded_conn
+
+    if _SHARED["conn"] is None:
+        _SHARED["conn"] = seeded_conn()
+    conn = _SHARED["conn"]
+    plugin._tool_ctx = build_tool_ctx(conn)
+    plugin._conn = conn
+    return plugin, conn
+
+
+def test_end_to_end_call_via_plugin_method():
+    """审查问题 1 回归：main._call_tool 的惰性导入必须指向 tools/ 子包。
+
+    AstrBot 真实调用 = handler(event, **kwargs) → _call_tool → facade；
+    此前 'from .facade import ...' 指向仓库根，生产装载下 8 个工具全部 ModuleNotFoundError。
+    """
+    plugin, _conn = _plugin_with_tool_ctx()
+    raw = asyncio.run(plugin.whl_league_brief(_FakeEvent(), scope="top", limit=4))
+    env = json.loads(raw)
+    assert env["ok"] is True and env["data"]["season"] == 9
+    # 再走一条 await 链更深（resolve_team_arg）的路径
+    raw = asyncio.run(plugin.whl_team_brief(_FakeEvent(), team="利物浦"))
+    env = json.loads(raw)
+    assert env["ok"] is True and env["data"]["club"]["name"] == "利物浦"
+
+
+def test_end_to_end_unconfigured_returns_not_bound_envelope():
+    """空转（_tool_ctx=None）时插件方法返回错误信封而不是抛异常。"""
+    main_mod = _load_main()
+    plugin = main_mod.WhleagueAdvisorPlugin(_FakeContext(), {})
+    raw = asyncio.run(plugin.whl_rules_lookup(_FakeEvent(), question="转会窗"))
+    env = json.loads(raw)
+    assert env["ok"] is False and env["error"]["code"] == "NOT_BOUND"

@@ -230,7 +230,7 @@ def resolve_player(
     """
     name = (query or "").strip()
     if not name:
-        raise ToolError(NOT_FOUND, "球员名为空")
+        raise ToolError(BAD_ARG, "球员名为空")  # schema required 已挡；兜底对齐 BAD_ARG 语义
     folded = _fold(name)
 
     # 译名缓存（manual / 正缓存直接给出拉丁名）
@@ -486,7 +486,11 @@ async def _club_for_member(ctx: ToolContext, call: CallContext, member: dict, ca
 
 
 def _club_from_card(conn, card: str | None) -> dict | None:
-    """群名片里的队名别名（弱信号）：完整名片保留，队名部分只做匹配（§4.7）。"""
+    """群名片里的队名别名（弱信号）：完整名片保留，队名部分只做匹配（§4.7）。
+
+    群名片含多个队名 → AMBIGUOUS 列候选让模型反问（§4.7 冲突策略原文），
+    不挑最长匹配替用户猜。
+    """
     if not card:
         return None
     clubs = dao.read_clubs(conn)
@@ -502,8 +506,15 @@ def _club_from_card(conn, card: str | None) -> dict | None:
     if len(hits) == 1:
         return dao.read_club_by_id(conn, next(iter(hits)))
     if len(hits) > 1:
-        # 群名片含多个队名 → 挑最长匹配（「曼联-阿甲」里「曼联」唯一命中是常态）；
-        # 真歧义由调用方 caveat 提示按绑定答。
-        best = max(hits.items(), key=lambda kv: len(kv[1]))
-        return dao.read_club_by_id(conn, best[0])
+        candidates = []
+        for club_id in list(hits)[:_TEAM_CANDIDATES_MAX]:
+            club = dao.read_club_by_id(conn, club_id)
+            if club:
+                candidates.append({"clubId": club["id"], "name": club["name"], "reason": "card"})
+        raise ToolError(
+            AMBIGUOUS,
+            f"群名片「{card.strip()}」里提到了多支球队，需要确认是哪支",
+            candidates=candidates,
+            hint="把候选列给用户反问「你说的是哪支？」；不要按名片挑一个",
+        )
     return None

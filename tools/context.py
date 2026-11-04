@@ -9,7 +9,7 @@ CallContext：单次调用的事件侧信息（group_id / sender_id / session_id
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..guard.ratelimit import SlidingRateLimiter
@@ -30,8 +30,8 @@ class ToolContext:
     bindings: BindingsClient | None       # None / enabled=False → 身份功能走 NOT_BOUND 分支
     limiter: SlidingRateLimiter
     allowed_groups: set[str] | None = None
-    session_neg_bypass: set = field(default_factory=set)
-    """(session_id, query_key) 集合：同会话第二次出现强制绕过负缓存（Q11-Q13）。"""
+    """允许使用工具的群（str 化）；None = 不限群（单测方便）。生产由 enabled_groups 装配。
+    同会话绕过负缓存的状态在 TranslationCache._bypassed（Q11-Q13），不在此处。"""
 
     def group_allowed(self, group_id: str | None) -> bool:
         if self.allowed_groups is None:

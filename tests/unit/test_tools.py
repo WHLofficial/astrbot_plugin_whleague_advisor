@@ -220,6 +220,19 @@ class TestTeamBrief:
         assert env["data"]["club"]["name"] == "利物浦"
         assert any("群名片" in c for c in env["caveats"])
 
+    def test_card_with_multiple_teams_is_ambiguous(self, conn):
+        """审查问题 2：群名片含多个队名 → AMBIGUOUS 列候选，不挑最长替用户猜（§4.7）。"""
+        ctx = build_tool_ctx(conn)
+        dao.upsert_clubs(conn, [{"id": 9101, "name": "皇家马德里"}, {"id": 9102, "name": "皇家社会"}],
+                         "2026-11-05T00:00:00+00:00")
+        try:
+            env = call(ctx, "whl_team_brief", {}, sender="999", card="皇家马德里-阿丙(皇家社会)")
+            assert env["error"]["code"] == "AMBIGUOUS"
+            names = {c["name"] for c in env["error"]["candidates"]}
+            assert {"皇家马德里", "皇家社会"} <= names
+        finally:
+            conn.execute("DELETE FROM clubs WHERE id IN (9101, 9102)")
+
     def test_person_card_view(self, ctx):
         """I03：「阿乙是谁」→ view=person 个人卡，不展开球队数据。"""
         bind_member(ctx, "333", 9, "利物浦", "阿乙")
@@ -228,6 +241,21 @@ class TestTeamBrief:
         assert env["data"]["person"] == "阿乙"
         assert env["data"]["club"]["name"] == "利物浦"
         assert "standing" not in env["data"]  # 个人卡不带积分榜
+
+    def test_person_card_without_binding_returns_card(self, ctx):
+        """审查问题 7：无绑定成员的个人卡可达（bound=false + caveat），不是 NOT_BOUND。"""
+        dao.upsert_group_members(ctx.conn, GROUP, [{"qq": "444", "card": "阿丁", "nickname": None}],
+                                 "2026-11-05T00:00:00+00:00")
+        env = call(ctx, "whl_team_brief", {"person": "阿丁", "view": "person"}, sender="999")
+        assert env["ok"] is True
+        assert env["data"]["person"] == "阿丁"
+        assert env["data"]["member"]["bound"] is False
+        assert env["data"]["via"] == "unbound"
+        assert "暂无球队绑定" in env["summary"]
+        assert "club" not in env["data"]
+        # 对照：按人解析球队（view=team 路径）仍是 NOT_BOUND 反问语义
+        env2 = call(ctx, "whl_team_brief", {"person": "阿丁"}, sender="999")
+        assert env2["error"]["code"] == "NOT_BOUND"
 
     def test_person_unbound_is_not_bound(self, ctx):
         dao.upsert_group_members(ctx.conn, GROUP, [{"qq": "444", "card": "阿丁", "nickname": None}],
@@ -323,8 +351,9 @@ class TestMarketBoard:
         assert {"playerId", "askPriceM", "status"} <= set(l0)
 
     def test_position_filter_rejects_unknown(self, ctx):
+        """非法位置 = 入参错误（BAD_ARG 让模型自我纠正），不是数据缺失。"""
         env = call(ctx, "whl_market_board", {"position": "XX"})
-        assert env["error"]["code"] == "NO_DATA"
+        assert env["error"]["code"] == "BAD_ARG"
 
     def test_club_filter_no_match_no_data(self, ctx):
         """利物浦在市场三件套里零出现 → NO_DATA（不编造）。"""

@@ -130,6 +130,80 @@ class TestGroupMembersStore:
         finally:
             conn.close()
 
+    def test_refresh_if_due_concurrent_same_group_deduped(self):
+        """审查问题 6：同群到期瞬间的并发消息只在途一次（in-flight 去重）。"""
+        conn = mem_conn()
+        try:
+            store = group_members_mod.GroupMembersStore(conn)
+            base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
+
+            class SlowBot:
+                def __init__(self):
+                    self.calls = []
+
+                async def call_action(self, action, **kw):
+                    self.calls.append(kw)
+                    await asyncio.sleep(0.05)  # 拉取在途窗口
+                    return [{"user_id": 1, "card": "甲", "nickname": None}]
+
+            class FakeEvent:
+                def __init__(self, bot, group_id="777"):
+                    self.bot = bot
+                    self.group_id = group_id
+
+            bot = SlowBot()
+
+            async def race():
+                # 同群 5 条消息同时到期：只有 1 条真正打 API
+                events = [FakeEvent(bot) for _ in range(5)]
+                results = await asyncio.gather(
+                    *(group_members_mod.refresh_if_due(e, store, now_fn=lambda: base) for e in events)
+                )
+                return results
+
+            results = asyncio.run(race())
+            assert sum(1 for r in results if r is True) == 1
+            assert len(bot.calls) == 1
+            # in-flight 释放后可再次到期拉取
+            later = lambda: base + timedelta(seconds=601)  # noqa: E731
+            assert asyncio.run(group_members_mod.refresh_if_due(FakeEvent(bot), store, now_fn=later)) is True
+            assert len(bot.calls) == 2
+        finally:
+            conn.close()
+
+    def test_refresh_if_due_concurrent_different_groups_both_run(self):
+        """in-flight 按群隔离：不同群并发互不影响。"""
+        conn = mem_conn()
+        try:
+            store = group_members_mod.GroupMembersStore(conn)
+            base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
+
+            class Bot:
+                def __init__(self):
+                    self.calls = []
+
+                async def call_action(self, action, **kw):
+                    self.calls.append(kw)
+                    return [{"user_id": 1, "card": "甲", "nickname": None}]
+
+            class FakeEvent:
+                def __init__(self, bot, group_id):
+                    self.bot = bot
+                    self.group_id = group_id
+
+            bot = Bot()
+
+            async def race():
+                return await asyncio.gather(
+                    group_members_mod.refresh_if_due(FakeEvent(bot, "8001"), store, now_fn=lambda: base),
+                    group_members_mod.refresh_if_due(FakeEvent(bot, "8002"), store, now_fn=lambda: base),
+                )
+
+            results = asyncio.run(race())
+            assert all(results) and len(bot.calls) == 2
+        finally:
+            conn.close()
+
 
 # ---- 绑定客户端（§4.7 契约）----
 
@@ -252,6 +326,35 @@ class TestTranslations:
             assert first == {"latin_name": None, "source": "negative"}
             assert second is None  # 同会话第二次 → 绕过
             assert other == {"latin_name": None, "source": "negative"}  # 换会话仍走负缓存
+        finally:
+            conn.close()
+
+    def test_bypass_set_bounded(self):
+        """审查问题 5：绕过集合有上限（512）+ 惰性清理，进程长跑不无界增长。"""
+        conn = mem_conn()
+        try:
+            now = datetime(2026, 11, 5, tzinfo=timezone.utc)
+            cache = self._cache(conn, now)
+            for i in range(translations_mod.BYPASS_MAX_ENTRIES + 50):
+                cache.remember_negative(f"q{i}")
+                cache.lookup(f"q{i}", session_id=f"s{i}")  # 每条都进绕过集合
+            assert len(cache._bypassed) <= translations_mod.BYPASS_MAX_ENTRIES
+        finally:
+            conn.close()
+
+    def test_bypass_entries_expire(self):
+        """绕过标记 TTL 过后，同会话再次查询重新走负缓存（不是永久放行）。"""
+        conn = mem_conn()
+        try:
+            now = datetime(2026, 11, 5, tzinfo=timezone.utc)
+            cache = self._cache(conn, now)
+            cache.remember_negative("旧闻")
+            assert cache.lookup("旧闻", session_id="s1")["source"] == "negative"
+            assert cache.lookup("旧闻", session_id="s1") is None  # 第二次绕过
+            ticks = {"t": cache._mono()}
+            cache._mono = lambda: ticks["t"]
+            ticks["t"] += translations_mod.BYPASS_TTL_SECONDS + 1
+            assert cache.lookup("旧闻", session_id="s1")["source"] == "negative"  # 标记已过期
         finally:
             conn.close()
 
