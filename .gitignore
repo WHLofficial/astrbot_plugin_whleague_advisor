@@ -6,8 +6,11 @@ HANDOFF.md
 handoff-*.md
 .zcode/
 
-# 私有：评测题集，阶段 6 再决定是否进仓（HANDOFF §6）
-tests/eval/
+# 私有：评测题集与判定口径文件，进仓时机由用户拍板（HANDOFF §6/§8.4 未决 4）；
+# 评测运行器 run.py 与管道冒烟题 smoke.yaml 随插件进仓（设计 §8.3 文件清单）
+tests/eval/questions.yaml
+tests/eval/persona.yaml
+tests/eval/README.md
 
 # 运行期数据（含真实球员数据与群内对话）
 advisor.db

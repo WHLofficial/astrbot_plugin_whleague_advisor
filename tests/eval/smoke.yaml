@@ -1,0 +1,59 @@
+# WHL 联赛顾问 · 管道冒烟题（设计 docs §8.3「评测运行器」：3-5 道走 PipelineScheduler）
+#
+# 目的：主航道直连 build_main_agent 不经过 pipeline，验不到「插件工具会不会在真实
+# 管道里被某个 stage 拦掉」（唤醒/@/命令入口、限流、content_safety、respond 阶段）。
+# 本题集专补这个盲区；数字与断言细核由 questions.yaml 主航道负责，冒烟只做机械检查：
+#   * reply_non_empty     —— 事件没被 stage 静默吞掉；
+#   * llm_error 文本兜底   —— provider 未配置时 agent 报「LLM 请求失败」，判 fail；
+#   * history_tool_any    —— 会话历史（_save_to_history 保存 assistant.tool_calls）里
+#                            出现过期望的 whl_* 调用，证明工具在真实管道里真的被执行；
+#   * no_tool             —— 边界题不得调用某工具。
+#
+# 群号不进仓：${WHL_EVAL_GROUP_ID} 由 run.py 启动时展开，未设置直接退出。
+# 判定器的文本检查在冒烟航道刻意从宽（唤醒词/人设/数据依赖评测环境），冒烟绿的
+# 定义是「管道畅通、工具可达」，不是「答案正确」。
+
+version: 1
+
+config:
+  repeat: 1            # 冒烟只跑一次，不取多数
+
+groups:
+  main: "${WHL_EVAL_GROUP_ID}"
+
+cases:
+  - id: K01
+    title: "@ 触发 + 联赛态势：whl_league_brief 在真实管道里可达"
+    bucket: smoke
+    ask: "现在联赛打到第几轮了？"
+    trigger: { type: at }          # 消息链首段 At(self_id)，由 WakingCheckStage 判唤醒
+    expect:
+      reply_non_empty: true
+      history_tool_any: [whl_league_brief]
+
+  - id: K02
+    title: "唤醒前缀入口 + 球员查询：whl_player_lookup 在真实管道里可达"
+    bucket: smoke
+    ask: "萨拉赫现在在哪个队？"
+    trigger: { type: prefix }      # 前缀取评测根 cmd_config.json 的 wake_prefix[0]
+    expect:
+      reply_non_empty: true
+      history_tool_any: [whl_player_lookup]
+
+  - id: K03
+    title: "命令入口 /whl状态：插件指令经 WakingCheckStage 的 handler filter 正常分发"
+    bucket: smoke
+    ask: "状态"
+    trigger: { type: command, text: "/whl状态" }
+    expect:
+      reply_non_empty: true        # 未配置也会回「未配置」，说明管道打通即可
+      # 不设 history_tool_any：命令入口不走 LLM agent，无会话历史
+
+  - id: K04
+    title: "@ 触发 + 现实足球边界：联赛估价工具不得被拿去答现实问题"
+    bucket: smoke
+    ask: "现实里萨拉赫和萨卡谁更强？"
+    trigger: { type: at }
+    expect:
+      reply_non_empty: true
+      no_tool: [whl_player_value, whl_compare_players]
