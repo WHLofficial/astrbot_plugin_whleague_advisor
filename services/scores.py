@@ -139,15 +139,6 @@ def extract_points(players: list[dict], listings: list[dict], deals: list[dict],
             add_comp(by_id.get(row.get("player_id")), row.get("fee"), "auction")
     for row in board:
         p = by_id.get(row.get("player_id"))
-        position = None
-        if p is not None:
-            position = p.get("position")
-        elif row.get("positions_json"):
-            try:
-                positions = json.loads(row["positions_json"])
-                position = positions[0] if positions else None
-            except ValueError:
-                position = None
         if p is None:
             # 板上球员理论上是活跃球员；不在 players 表（同步漂移窗口）时跳过，
             # 只有 players 表里的行才能算 level。
@@ -284,8 +275,11 @@ def evaluate_player(player: dict, attrs: dict | None, baseline: dict, model: Mod
         deal_low = round(deal_low, 2)
         deal_high = round(deal_high, 2)
 
-    rc_gap = round(rc / fair_mid, 3) if fair_mid and rc > 0 else None
-    rc_flag = rc_flag_of(rc, fair_mid, fair_high) if rc > 0 and fair_mid else None
+    # rc_gap / rc_flag 是成年估价的 RC 约束语义；trainee 走固定激活价，不参与
+    rc_gap = rc_flag = None
+    if rc > 0 and fair_mid and player.get("status") != "trainee":
+        rc_gap = round(rc / fair_mid, 3)
+        rc_flag = rc_flag_of(rc, fair_mid, fair_high)
     if rc_flag:
         flags.append(rc_flag)
     if player.get("not_for_sale"):

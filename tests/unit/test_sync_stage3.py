@@ -328,9 +328,15 @@ class TestSourceParsersOnFixtures:
         assert sources_club.parse_roster_line("Free Agent|239086") == {
             "display_name": "Free Agent", "club_id": None, "fc_id": 239086,
         }
+        # 姓名本身含「|」：倒数第二段非数字 → 并回姓名，不串字段
+        assert sources_club.parse_roster_line("A|B|14|239087") == {
+            "display_name": "A|B", "club_id": 14, "fc_id": 239087,
+        }
         assert sources_club.parse_roster_line("") is None
-        with pytest.raises(ValueError):
+        with pytest.raises(import_plugin("sources").SourcePayloadError):
             sources_club.parse_roster_line("bad-line-no-pipe")
+        with pytest.raises(import_plugin("sources").SourcePayloadError):
+            sources_club.parse_roster_line("Name|not-a-number")
 
     def test_meta_fixture_is_71_key_buffed_attrs(self):
         meta = sources_club.parse_players_meta(load_fixture("club_players_meta.json"))

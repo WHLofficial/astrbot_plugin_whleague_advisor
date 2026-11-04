@@ -176,6 +176,8 @@ class TestSpecialStates:
         assert row["fair_mid"] == 5.0
         assert row["deal_low"] is None and row["deal_high"] is None
         assert "trainee" in row["flags"]
+        # 训练营不给成年估价的 RC 约束语义
+        assert row["rc_flag"] is None and row["rc_gap"] is None
 
     def test_free_agent_no_deal(self):
         """rc=0：不用 deal，只用 fair（曲线可用时）。"""

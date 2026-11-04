@@ -250,21 +250,26 @@ def parse_roster(payload: Any) -> dict:
 def parse_roster_line(line: str) -> dict | None:
     """单行「姓名|俱乐部ID|fcId」（俱乐部段可省略）→ {display_name, club_id, fc_id}。
 
-    姓名在前、数字在后，从行尾反向切分（players.ts:988-990 同口径）；
-    空行返回 None。
+    姓名在前、数字在后，从行尾反向切分（players.ts:988-990 同口径）：
+    末段必为 fcId；倒数第二段是纯数字才算 clubId，否则并回姓名
+    （姓名本身可含「|」，平台注释同口径）；空行返回 None。
     """
     line = line.strip()
     if not line:
         return None
-    parts = line.rsplit("|", 2)
-    if len(parts) == 3:
-        name, club_raw, fc_raw = parts
-        club_id: int | None = int(club_raw) if club_raw.strip() else None
-    else:
-        name, fc_raw = parts
-        club_id = None
+    parts = line.split("|")
+    if len(parts) < 2:
+        raise SourcePayloadError(f"players/roster 行缺少 fcId 段: {line[:40]!r}")
+    fc_raw = parts[-1].strip()
+    if not fc_raw.isdigit():
+        raise SourcePayloadError(f"players/roster 行 fcId 非数字: {line[:40]!r}")
+    club_id: int | None = None
+    name_parts = parts[:-1]
+    if name_parts and name_parts[-1].strip().isdigit():
+        club_id = int(name_parts[-1].strip())
+        name_parts = name_parts[:-1]
     fc_id = int(fc_raw)
-    return {"display_name": name.strip(), "club_id": club_id, "fc_id": fc_id}
+    return {"display_name": "|".join(name_parts).strip(), "club_id": club_id, "fc_id": fc_id}
 
 
 def parse_players_meta(payload: Any) -> list[dict]:
