@@ -1,0 +1,162 @@
+[
+ {
+  "source": "listing",
+  "player_id": 1260,
+  "price": 7,
+  "position": "CM",
+  "level": 6.0,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 177,
+  "price": 6,
+  "position": "CDM",
+  "level": 6,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 142,
+  "price": 10,
+  "position": "LW",
+  "level": 6,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 194,
+  "price": 5,
+  "position": "GK",
+  "level": 7.5,
+  "role_group": "GK"
+ },
+ {
+  "source": "board",
+  "player_id": 305,
+  "price": 4,
+  "position": "CAM",
+  "level": 6,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 102,
+  "price": 15,
+  "position": "CAM",
+  "level": 7,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 192,
+  "price": 20,
+  "position": "RB",
+  "level": 6,
+  "role_group": "FB"
+ },
+ {
+  "source": "board",
+  "player_id": 265,
+  "price": 3,
+  "position": "CB",
+  "level": 6,
+  "role_group": "CB"
+ },
+ {
+  "source": "board",
+  "player_id": 234,
+  "price": 10,
+  "position": "RM",
+  "level": 6,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 77,
+  "price": 30,
+  "position": "CM",
+  "level": 8.0,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 13,
+  "price": 30,
+  "position": "CDM",
+  "level": 8,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 40,
+  "price": 35,
+  "position": "RM",
+  "level": 8.0,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 793,
+  "price": 5,
+  "position": "CB",
+  "level": 6.5,
+  "role_group": "CB"
+ },
+ {
+  "source": "board",
+  "player_id": 156,
+  "price": 6,
+  "position": "CAM",
+  "level": 6,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 24,
+  "price": 40,
+  "position": "CAM",
+  "level": 9.0,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 56,
+  "price": 35,
+  "position": "CDM",
+  "level": 8.0,
+  "role_group": "MF"
+ },
+ {
+  "source": "board",
+  "player_id": 159,
+  "price": 25,
+  "position": "CM",
+  "level": 7.5,
+  "role_group": "MF"
+ },
+ {
+  "source": "auction",
+  "player_id": 179,
+  "price": 16,
+  "position": "LB",
+  "level": 7.5,
+  "role_group": "FB"
+ },
+ {
+  "source": "auction",
+  "player_id": 79,
+  "price": 5,
+  "position": "CM",
+  "level": 7,
+  "role_group": "MF"
+ },
+ {
+  "source": "auction",
+  "player_id": 248,
+  "price": 20,
+  "position": "CB",
+  "level": 7.0,
+  "role_group": "CB"
+ }
+]

@@ -7,8 +7,9 @@
   每个迁移在单个事务（BEGIN IMMEDIATE ... COMMIT）内执行，失败整体回滚、
   版本号不推进，下轮重试；
 * 幂等：已应用的版本号直接跳过，run_migrations 连跑两遍结果一致（测试覆盖）；
-* 1 号迁移正文即同目录 schema.sql（单一事实源），后续阶段新增表时
-  在 MIGRATIONS 追加 (版本号, 名称, sql) 并同步更新 schema.sql 为累计快照。
+* 1 号迁移正文即同目录 schema.sql；后续阶段每个迁移一个独立 SQL 文件
+  （如 schema_stage3.sql），在 MIGRATIONS 追加 (版本号, 名称, sql)，
+  累计 schema = 各迁移正文按版本号顺序拼接。
 """
 
 from __future__ import annotations
@@ -30,10 +31,13 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+SCHEMA_STAGE3_PATH = Path(__file__).with_name("schema_stage3.sql")
 
 # (版本号, 迁移名, sql 正文)。版本号必须从 1 开始连续。
+# 每个 SQL 正文是独立文件；累计 schema = 各迁移正文按版本号顺序拼接。
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "0001_core_tables", SCHEMA_PATH.read_text(encoding="utf-8")),
+    (2, "0002_players_market_model", SCHEMA_STAGE3_PATH.read_text(encoding="utf-8")),
 )
 
 CURRENT_VERSION = MIGRATIONS[-1][0]

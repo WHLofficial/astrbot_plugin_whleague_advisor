@@ -27,7 +27,11 @@ _LAST_ERROR_PREFIX = "last_error:"
 
 _CPU_SUFFIX_RE = re.compile(r"\s*[（(]CPU[）)]\s*$")
 
-JOBS = ("season", "clubs", "standings", "fixtures")
+JOBS = ("season", "clubs", "players", "player_attrs", "market", "scores", "roster", "standings", "fixtures")
+
+# 依赖顺序（设计 §4.2）：players → player_attrs 链式；market 先于 scores
+# （可比拟合的价格点来自挂牌/成交/广告板，首轮同步即可拟出真系数）；roster 独立。
+JOBS_DEFAULT_ORDER = JOBS
 
 
 def utc_now_iso() -> str:
@@ -339,6 +343,293 @@ def replace_fixtures(
         )
 
 
+# ---- 阶段 3：球员 / 名册 / 属性 / 模型 / 市场 ----
+
+
+_PLAYERS_COLUMNS = (
+    "id", "fc_id", "name", "display_name", "club_id", "position", "age", "ca", "pa",
+    "base_ca", "foot", "prestige", "influence", "market_value", "wage", "release_fee",
+    "contract_type", "status", "transfer_listed", "not_for_sale", "protected",
+    "list_price", "playstyles_json", "badges_json", "search_name",
+)
+
+
+def upsert_players(conn: sqlite3.Connection, rows: list[dict], updated_at: str) -> None:
+    """upsert 活跃球员（active=1）。行字段名与 _PLAYERS_COLUMNS 一致。"""
+    for row in rows:
+        conn.execute(
+            f"INSERT INTO players ({', '.join(_PLAYERS_COLUMNS)}, active, synced_at) "
+            f"VALUES ({', '.join('?' for _ in _PLAYERS_COLUMNS)}, 1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET " + ", ".join(f"{c} = excluded.{c}" for c in _PLAYERS_COLUMNS)
+            + ", active = 1, synced_at = excluded.synced_at",
+            (*(row.get(c) for c in _PLAYERS_COLUMNS), updated_at),
+        )
+
+
+def deactivate_players_not_in(conn: sqlite3.Connection, ids: list[int]) -> int:
+    """§4.4：未在最新名单出现的人标 active=0，不物理删除。返回受影响行数。"""
+    if not ids:
+        return conn.execute("UPDATE players SET active = 0 WHERE active = 1").rowcount
+    marks = ", ".join("?" for _ in ids)
+    cur = conn.execute(
+        f"UPDATE players SET active = 0 WHERE active = 1 AND id NOT IN ({marks})", ids
+    )
+    return cur.rowcount
+
+
+def replace_player_index(conn: sqlite3.Connection, rows: list[dict], updated_at: str) -> None:
+    """整表替换全联盟名字索引（roster 文本解析结果）。"""
+    conn.execute("DELETE FROM player_index")
+    for row in rows:
+        conn.execute(
+            "INSERT INTO player_index (fc_id, display_name, club_id, search_name, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (row["fc_id"], row["display_name"], row.get("club_id"), row.get("search_name"), updated_at),
+        )
+
+
+def upsert_player_attrs(conn: sqlite3.Connection, rows: list[dict], fetched_at: str) -> None:
+    """按 fc_id upsert 属性包（meta 批量返回，已含 buffedAttrs）。"""
+    for row in rows:
+        conn.execute(
+            "INSERT INTO player_attrs (fc_id, player_id, attrs_json, height, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(fc_id) DO UPDATE SET player_id = excluded.player_id, "
+            "attrs_json = excluded.attrs_json, height = excluded.height, fetched_at = excluded.fetched_at",
+            (row["fc_id"], row.get("player_id"), row.get("attrs_json"), row.get("height"), fetched_at),
+        )
+
+
+def replace_market(
+    conn: sqlite3.Connection,
+    listings: list[dict],
+    deals: list[dict],
+    board: list[dict],
+    updated_at: str,
+) -> None:
+    """市场三表整表替换（同一事务内调用）：上游返回即真相，本地不自行结算。"""
+    conn.execute("DELETE FROM listings")
+    for row in listings:
+        conn.execute(
+            "INSERT INTO listings (id, player_id, fc_id, club_id, club_name, type, ask_price, "
+            "highest_bid, bid_count, deadline_at, status, listed_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row.get("player_id"), row.get("fc_id"), row.get("club_id"),
+                row.get("club_name"), row.get("type"), row.get("ask_price"),
+                row.get("highest_bid"), row.get("bid_count"), row.get("deadline_at"),
+                row.get("status"), row.get("listed_at"), updated_at,
+            ),
+        )
+    conn.execute("DELETE FROM deals")
+    for row in deals:
+        conn.execute(
+            "INSERT INTO deals (id, player_id, player_name, from_club_id, from_club_name, "
+            "to_club_id, to_club_name, fee, extra_fee, type, season, window_seq, completed_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row.get("player_id"), row.get("player_name"),
+                row.get("from_club_id"), row.get("from_club_name"),
+                row.get("to_club_id"), row.get("to_club_name"),
+                row.get("fee"), row.get("extra_fee"), row.get("type"),
+                row.get("season"), row.get("window_seq"), row.get("completed_at"), updated_at,
+            ),
+        )
+    conn.execute("DELETE FROM transfer_board")
+    for row in board:
+        conn.execute(
+            "INSERT INTO transfer_board (player_id, fc_id, name, positions_json, club_id, club_name, "
+            "age, ca, pa, list_price, release_fee, listed_at, status, not_for_sale, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["player_id"], row.get("fc_id"), row.get("name"), row.get("positions_json"),
+                row.get("club_id"), row.get("club_name"), row.get("age"), row.get("ca"),
+                row.get("pa"), row.get("list_price"), row.get("release_fee"), row.get("listed_at"),
+                row.get("status"), row.get("not_for_sale", 0), updated_at,
+            ),
+        )
+
+
+def upsert_model_params(
+    conn: sqlite3.Connection,
+    key: str,
+    value: dict,
+    *,
+    n: int | None,
+    r2: float | None,
+    trained_at: str,
+    version: str,
+) -> None:
+    """写回一组回归系数；n / r2 / version 是形状锁字段（HANDOFF §7 阶段 3）。"""
+    conn.execute(
+        "INSERT INTO model_params (key, value_json, n, r2, trained_at, version) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, n = excluded.n, "
+        "r2 = excluded.r2, trained_at = excluded.trained_at, version = excluded.version",
+        (key, json.dumps(value, ensure_ascii=False, sort_keys=True), n, r2, trained_at, version),
+    )
+
+
+def read_model_params(conn: sqlite3.Connection, key: str) -> dict | None:
+    row = conn.execute(
+        "SELECT value_json, n, r2, trained_at, version FROM model_params WHERE key = ?", (key,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "key": key,
+        "value": json.loads(row["value_json"]),
+        "n": row["n"],
+        "r2": row["r2"],
+        "trained_at": row["trained_at"],
+        "version": row["version"],
+    }
+
+
+def read_all_model_params(conn: sqlite3.Connection) -> dict[str, dict]:
+    return {
+        key: params
+        for key in ("wage", "comp")
+        if (params := read_model_params(conn, key)) is not None
+    }
+
+
+def replace_player_scores(conn: sqlite3.Connection, rows: list[dict], as_of: str) -> None:
+    """整表替换预计算基线（同一事务内调用）。行字段与 player_scores 列一致。"""
+    columns = (
+        "player_id", "as_of", "level", "role_group", "profile_score", "strengths_json",
+        "weaknesses_json", "rc", "wage", "exp_wage", "wage_gap", "wage_flag",
+        "fair_low", "fair_mid", "fair_high", "fair_source", "deal_low", "deal_high",
+        "rc_gap", "rc_flag", "role_n", "confidence", "flags_json", "model_version", "inputs_hash",
+    )
+    conn.execute("DELETE FROM player_scores")
+    for row in rows:
+        conn.execute(
+            f"INSERT INTO player_scores ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            (*(row.get(c) for c in columns),),
+        )
+
+
+# ---- 阶段 3：查询（阶段 4 工具层直接消费）----
+
+
+def read_active_players(conn: sqlite3.Connection) -> list[dict]:
+    """活跃球员全量（active=1），估价与属性预取的输入。"""
+    rows = conn.execute(
+        f"SELECT {', '.join(_PLAYERS_COLUMNS)} FROM players WHERE active = 1 ORDER BY id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_player_by_id(conn: sqlite3.Connection, player_id: int) -> dict | None:
+    row = conn.execute(
+        f"SELECT {', '.join(_PLAYERS_COLUMNS)}, active FROM players WHERE id = ?", (player_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def read_active_fc_ids(conn: sqlite3.Connection) -> list[int]:
+    rows = conn.execute(
+        "SELECT fc_id FROM players WHERE active = 1 AND fc_id IS NOT NULL ORDER BY fc_id"
+    ).fetchall()
+    return [r["fc_id"] for r in rows]
+
+
+def read_player_id_by_fc(conn: sqlite3.Connection) -> dict[int, int]:
+    """fc_id → 内部 id（属性预取回填用；roster 第三段就是 fc_id）。"""
+    rows = conn.execute("SELECT id, fc_id FROM players WHERE fc_id IS NOT NULL").fetchall()
+    return {r["fc_id"]: r["id"] for r in rows}
+
+
+def read_player_attrs(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT fc_id, player_id, attrs_json, height, fetched_at FROM player_attrs ORDER BY fc_id"
+    ).fetchall()
+    out = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["attrs"] = json.loads(item.pop("attrs_json")) if item["attrs_json"] else None
+        except ValueError:
+            item["attrs"] = None
+        out.append(item)
+    return out
+
+
+def read_listings(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    player_id: int | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """挂牌查询；status=None 返回全部状态（上游语义为准，本地不结算）。"""
+    clauses, args = [], []
+    if status is not None:
+        clauses.append("status = ?")
+        args.append(status)
+    if player_id is not None:
+        clauses.append("player_id = ?")
+        args.append(player_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM listings {where} ORDER BY CASE type WHEN 'forced' THEN 0 ELSE 1 END, id DESC LIMIT ?",
+        (*args, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_deals(
+    conn: sqlite3.Connection,
+    *,
+    player_id: int | None = None,
+    types: tuple[str, ...] | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """成交查询；types 过滤（可比锚只认 forced_auction / activation，设计 §4.3）。"""
+    clauses, args = [], []
+    if player_id is not None:
+        clauses.append("player_id = ?")
+        args.append(player_id)
+    if types:
+        clauses.append(f"type IN ({', '.join('?' for _ in types)})")
+        args.extend(types)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"SELECT * FROM deals {where} ORDER BY completed_at DESC, id DESC LIMIT ?", (*args, limit)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_transfer_board(conn: sqlite3.Connection, *, limit: int = 200) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM transfer_board ORDER BY listed_at IS NULL, listed_at DESC, player_id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_player_scores(conn: sqlite3.Connection, *, active_only: bool = True) -> list[dict]:
+    """预计算基线读取；active_only=True 时只取仍活跃的球员（阶段 4 工具默认口径）。"""
+    sql = (
+        "SELECT s.* FROM player_scores s "
+        + ("JOIN players p ON p.id = s.player_id WHERE p.active = 1 " if active_only else "")
+        + "ORDER BY s.player_id"
+    )
+    rows = conn.execute(sql).fetchall()
+    out = []
+    for r in rows:
+        item = dict(r)
+        for col in ("strengths_json", "weaknesses_json", "flags_json"):
+            try:
+                item[col.removesuffix("_json")] = json.loads(item[col]) if item[col] else []
+            except ValueError:
+                item[col.removesuffix("_json")] = []
+        out.append(item)
+    return out
+
+
 # ---- 读取 ----
 
 
@@ -378,7 +669,11 @@ def resolve_club_id(team_name: str, club_map: dict[str, int]) -> int | None:
 
 
 def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    tables = ("seasons", "tournaments", "clubs", "standings", "fixtures", "sync_runs")
+    tables = (
+        "seasons", "tournaments", "clubs", "standings", "fixtures", "sync_runs",
+        "players", "player_index", "player_attrs", "player_scores",
+        "listings", "deals", "transfer_board",
+    )
     return {
         t: int(conn.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"]) for t in tables
     }

@@ -1,0 +1,284 @@
+{
+ "players": [
+  {
+   "id": 7,
+   "uid": "fc202126",
+   "name": "Harry Kane",
+   "officialName": "H. Kane",
+   "number": "91",
+   "clubId": 9,
+   "clubName": "利物浦",
+   "clubLogoKey": "team/3/1788576851606.png",
+   "position": "ST",
+   "positions": [
+    "ST"
+   ],
+   "age": 31,
+   "ca": 89,
+   "pa": 89,
+   "foot": 1,
+   "baseCa": 89,
+   "fcId": 202126,
+   "growable": false,
+   "prestige": 5,
+   "influence": 5.2,
+   "marketValue": null,
+   "status": "normal",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 2,
+   "marker": "ge87",
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 1,
+   "badgesSilver": 5,
+   "badgesGold": 1,
+   "wage": 5.5,
+   "releaseFee": 50,
+   "contractType": "formal",
+   "source": "negotiation",
+   "unsatisfied": false,
+   "serviceSeasons": 0,
+   "protected": true,
+   "psIds": [
+    5,
+    7,
+    8,
+    13,
+    33,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    101,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 5,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 7,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 3,
+     "psid": 8,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 4,
+     "psid": 13,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 5,
+     "psid": 33,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 13,
+     "psid": 101,
+     "gold": true,
+     "source": "fc"
+    }
+   ]
+  },
+  {
+   "id": 15,
+   "uid": "fc203376",
+   "name": "Virgil van Dijk",
+   "officialName": "V. van Dijk",
+   "number": "4",
+   "clubId": 449,
+   "clubName": "皇家贝蒂斯",
+   "clubLogoKey": "team/12/1788577022968.png",
+   "position": "CB",
+   "positions": [
+    "CB"
+   ],
+   "age": 33,
+   "ca": 89,
+   "pa": 89,
+   "foot": 1,
+   "baseCa": 89,
+   "fcId": 203376,
+   "growable": false,
+   "prestige": 5,
+   "influence": 5.2,
+   "marketValue": null,
+   "status": "normal",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 1,
+   "marker": "ge87",
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 3,
+   "badgesSilver": 6,
+   "badgesGold": 1,
+   "wage": 4.9,
+   "releaseFee": 30,
+   "contractType": "formal",
+   "source": "import",
+   "unsatisfied": false,
+   "serviceSeasons": 0.5,
+   "protected": true,
+   "psIds": [
+    5,
+    12,
+    21,
+    23,
+    24,
+    44,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    126,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 5,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 12,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 3,
+     "psid": 21,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 4,
+     "psid": 23,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 5,
+     "psid": 24,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 6,
+     "psid": 44,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 13,
+     "psid": 126,
+     "gold": true,
+     "source": "fc"
+    }
+   ]
+  },
+  {
+   "id": 19,
+   "uid": "fc192119",
+   "name": "Thibaut Courtois",
+   "officialName": "T. Courtois",
+   "number": "1",
+   "clubId": 14,
+   "clubName": "诺丁汉森林",
+   "clubLogoKey": "team/18/1788577356249.png",
+   "position": "GK",
+   "positions": [
+    "GK"
+   ],
+   "age": 33,
+   "ca": 89,
+   "pa": 89,
+   "foot": 0,
+   "baseCa": 89,
+   "fcId": 192119,
+   "growable": false,
+   "prestige": 5,
+   "influence": 5.2,
+   "marketValue": null,
+   "status": "normal",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 1,
+   "marker": "ge87",
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 2,
+   "badgesSilver": 2,
+   "badgesGold": 1,
+   "wage": 2.9,
+   "releaseFee": 13,
+   "contractType": "formal",
+   "source": "import",
+   "unsatisfied": false,
+   "serviceSeasons": 0.5,
+   "protected": true,
+   "psIds": [
+    51,
+    54,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    153,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 51,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 54,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 13,
+     "psid": 153,
+     "gold": true,
+     "source": "fc"
+    }
+   ]
+  }
+ ],
+ "nextCursor": "19"
+}

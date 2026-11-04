@@ -46,11 +46,14 @@ def load_fixture(name: str):
 
 
 class FixtureTransport:
-    """离线回放传输：path → 录制 fixture 文件名 / 内联 payload / 异常。
+    """离线回放传输：path → 录制 fixture 文件名 / 内联 payload / 异常 / 可调用路由。
 
     * route 值为 str：当作 fixtures 目录下文件名，读取其 JSON；
     * route 值为 dict/list：直接序列化返回；
     * route 值为 Exception 实例：抛出（模拟断网等传输层故障）；
+    * route 值为可调用对象：以本次请求 params 为参数调用，返回 payload
+      （/api/players 游标翻页、/api/players/meta 按 fcIds 过滤这类
+      「同路径多形状」端点用它路由）；
     * 未录制的 path 一律 AssertionError —— 新端点必须先录 fixture，
       顺带保证任何测试都碰不到真实网络。
     """
@@ -68,7 +71,9 @@ class FixtureTransport:
             raise AssertionError(f"FixtureTransport 未录制该路径: {path}")
         if isinstance(route, Exception):
             raise route
-        if isinstance(route, str):
+        if callable(route) and not isinstance(route, (str, bytes)):
+            payload = route(params or {})
+        elif isinstance(route, str):
             payload = load_fixture(route)
         else:
             payload = route
@@ -109,3 +114,53 @@ def tour_routes() -> dict:
         routes[f"/api/public/tournaments/{tid}/standings"] = f"tour_standings_{tid}.json"
         routes[f"/api/public/tournaments/{tid}/matches"] = f"tour_matches_{tid}.json"
     return routes
+
+
+@pytest.fixture()
+def player_routes() -> dict:
+    """阶段 3 球员/名册/meta 路由：players 按游标翻页，meta 按 fcIds 过滤（同真实上游语义）。"""
+    meta_rows = load_fixture("club_players_meta.json")["players"]
+    meta_by_fc = {
+        row["fcId"]: {"fcId": row["fcId"], "height": row["height"],
+                      "attrs": row["attrs"], "playstyles": row["playstyles"]}
+        for row in meta_rows
+    }
+    p1 = load_fixture("club_players_normal_p1.json")
+    p2 = load_fixture("club_players_normal_p2.json")
+    listed = load_fixture("club_players_listed.json")
+    trainee = load_fixture("club_players_trainee.json")
+
+    def players_route(params: dict):
+        status = params.get("status", "normal")
+        if status == "normal":
+            return p2 if params.get("cursor") else p1
+        if status == "listed":
+            return listed
+        return trainee
+
+    def meta_route(params: dict):
+        raw = params.get("fcIds", "")
+        ids = [int(x) for x in str(raw).split(",") if x.strip().isdigit()]
+        return {"players": [meta_by_fc[i] for i in ids if i in meta_by_fc]}
+
+    return {
+        "/api/players": players_route,
+        "/api/players/roster": "club_players_roster.json",
+        "/api/players/meta": meta_route,
+    }
+
+
+@pytest.fixture()
+def market_routes() -> dict:
+    """阶段 3 市场三件套路由（挂牌第一页 / 最近成交 / 广告板）。"""
+    return {
+        "/api/market/listings": "club_market_listings.json",
+        "/api/market/deals": "club_market_deals.json",
+        "/api/market/transfer-board": "club_market_board.json",
+    }
+
+
+@pytest.fixture()
+def all_routes(club_routes, tour_routes, player_routes, market_routes) -> dict:
+    """全量路由：season → … → fixtures 九个任务一次跑通的完整回放。"""
+    return {**club_routes, **tour_routes, **player_routes, **market_routes}

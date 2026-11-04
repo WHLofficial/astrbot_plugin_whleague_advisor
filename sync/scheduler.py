@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVALS: dict[str, float] = {
     "season": 300.0,  # 热 5 分钟
     "clubs": 900.0,  # 温 15 分钟
+    "players": 900.0,  # 温：活跃名单三态翻页（约 8 请求）
+    "player_attrs": 3600.0,  # 冷 60 分钟：/api/players/meta 每批 90（约 7 批）
+    "scores": 3600.0,  # 冷：拟合 + player_scores 预计算（§5.6/§5.7）
+    "roster": 3600.0,  # 冷：全联盟名字索引
+    "market": 300.0,  # 热：挂牌第一页 / 最近成交 / 广告板
     "standings": 300.0,  # 热
     "fixtures": 300.0,  # 热
 }

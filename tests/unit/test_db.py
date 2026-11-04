@@ -39,8 +39,8 @@ class TestMigrations:
     def test_run_twice_is_idempotent(self, raw_conn):
         """验收项：迁移跑两遍幂等——第二遍零应用、schema 快照不变、数据保留。"""
         applied_first = migrations.run_migrations(raw_conn)
-        assert applied_first == [1]
-        assert dao.get_schema_version(raw_conn) == 1
+        assert applied_first == [m[0] for m in migrations.MIGRATIONS]  # [1, 2]
+        assert dao.get_schema_version(raw_conn) == migrations.CURRENT_VERSION
 
         snapshot_after_first = _schema_snapshot(raw_conn)
         # 两遍之间写入业务数据，验证第二遍不破坏
@@ -66,32 +66,46 @@ class TestMigrations:
         conn2 = dao.connect(path)
         try:
             assert migrations.run_migrations(conn2) == []
-            assert dao.get_schema_version(conn2) == 1
+            assert dao.get_schema_version(conn2) == migrations.CURRENT_VERSION
         finally:
             conn2.close()
 
     def test_failed_migration_rolls_back_and_keeps_version(self, raw_conn):
         """迁移中途失败：整体回滚（半张表都不留）、版本号不推进、可重试。"""
-        bad = (2, "0002_bad", (
+        version = migrations.CURRENT_VERSION + 1
+        bad = (version, "00XX_bad", (
             "CREATE TABLE should_rollback (x INTEGER);\n"
             "INSERT INTO missing_table VALUES (1);\n"
         ))
         with pytest.raises(sqlite3.OperationalError):
             migrations.run_migrations(raw_conn, migrations.MIGRATIONS + (bad,))
-        assert dao.get_schema_version(raw_conn) == 1
+        assert dao.get_schema_version(raw_conn) == migrations.CURRENT_VERSION
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert "should_rollback" not in names
         # 清理后重试同一迁移可再跑（版本号没被写坏）
-        good = (2, "0002_good", "CREATE TABLE ok_table (x INTEGER);")
-        assert migrations.run_migrations(raw_conn, migrations.MIGRATIONS + (good,)) == [2]
+        good = (version, "00XX_good", "CREATE TABLE ok_table (x INTEGER);")
+        assert migrations.run_migrations(raw_conn, migrations.MIGRATIONS + (good,)) == [version]
 
-    def test_schema_sql_matches_migrations_result(self, raw_conn):
-        """schema.sql 与迁移产物一致：直接执行脚本建库 ≡ run_migrations 建库。"""
+    def test_stage3_migration_adds_player_tables(self, raw_conn):
+        """2 号迁移给旧库补阶段 3 表；1 号库（旧版快照）升级后版本号到 2。"""
+        migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:1])  # 只跑 1 号
+        assert dao.get_schema_version(raw_conn) == 1
+        names = {name for name, _sql in _schema_snapshot(raw_conn)}
+        assert "players" not in names
+        assert migrations.run_migrations(raw_conn) == [2]
+        names = {name for name, _sql in _schema_snapshot(raw_conn)}
+        assert {"players", "player_index", "player_attrs", "player_scores",
+                "model_params", "listings", "deals", "transfer_board"} <= names
+        assert dao.get_schema_version(raw_conn) == 2
+
+    def test_migration_bodies_concatenate_to_full_schema(self, raw_conn):
+        """累计 schema = 各迁移正文按版本号拼接：拼起来执行 ≡ run_migrations 产物。"""
         migrations.run_migrations(raw_conn)
         from_migrations = _schema_snapshot(raw_conn)
         scripted = sqlite3.connect(":memory:")
         try:
-            scripted.executescript(migrations.SCHEMA_PATH.read_text(encoding="utf-8"))
+            concatenated = "\n".join(sql for _v, _n, sql in sorted(migrations.MIGRATIONS))
+            scripted.executescript(concatenated)
             scripted.row_factory = sqlite3.Row
             from_script = [
                 (r[0], r[1] or "")
@@ -268,10 +282,14 @@ class TestResolve:
 class TestSnapshot:
     def test_collect_status_snapshot_shape(self, migrated_conn):
         snap = dao.collect_status_snapshot(migrated_conn)
-        assert snap["schema_version"] == 1
+        assert snap["schema_version"] == migrations.CURRENT_VERSION
         assert snap["last_success"] == {}
         assert snap["degraded"] == {}
-        assert set(snap["counts"]) == {"seasons", "tournaments", "clubs", "standings", "fixtures", "sync_runs"}
+        assert set(snap["counts"]) == {
+            "seasons", "tournaments", "clubs", "standings", "fixtures", "sync_runs",
+            "players", "player_index", "player_attrs", "player_scores",
+            "listings", "deals", "transfer_board",
+        }
         dao.set_last_success(migrated_conn, "clubs", "2026-11-05T00:00:00+00:00")
         dao.mark_degraded(migrated_conn, "season", "x")
         snap = dao.collect_status_snapshot(migrated_conn)

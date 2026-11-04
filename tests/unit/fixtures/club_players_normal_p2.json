@@ -1,0 +1,279 @@
+{
+ "players": [
+  {
+   "id": 22,
+   "uid": "fc188545",
+   "name": "Robert Lewandowski",
+   "officialName": "R. Lewandowski",
+   "number": "9",
+   "clubId": 66,
+   "clubName": "里昂",
+   "clubLogoKey": "team/2/1788577454617.png",
+   "position": "ST",
+   "positions": [
+    "ST"
+   ],
+   "age": 36,
+   "ca": 88,
+   "pa": 88,
+   "foot": 1,
+   "baseCa": 88,
+   "fcId": 188545,
+   "growable": false,
+   "prestige": 5,
+   "influence": 5.2,
+   "marketValue": null,
+   "status": "normal",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 1,
+   "marker": "ge87",
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 3,
+   "badgesSilver": 6,
+   "badgesGold": 1,
+   "wage": 4.6,
+   "releaseFee": 30,
+   "contractType": "formal",
+   "source": "import",
+   "unsatisfied": false,
+   "serviceSeasons": 0.5,
+   "protected": true,
+   "psIds": [
+    1,
+    3,
+    5,
+    7,
+    8,
+    33,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    102,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 1,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 3,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 3,
+     "psid": 5,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 4,
+     "psid": 7,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 5,
+     "psid": 8,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 6,
+     "psid": 33,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 13,
+     "psid": 102,
+     "gold": true,
+     "source": "fc"
+    }
+   ]
+  },
+  {
+   "id": 30,
+   "uid": "fc200389",
+   "name": "Jan Oblak",
+   "officialName": "J. Oblak",
+   "number": "13",
+   "clubId": 449,
+   "clubName": "皇家贝蒂斯",
+   "clubLogoKey": "team/12/1788577022968.png",
+   "position": "GK",
+   "positions": [
+    "GK"
+   ],
+   "age": 32,
+   "ca": 88,
+   "pa": 88,
+   "foot": 1,
+   "baseCa": 88,
+   "fcId": 200389,
+   "growable": false,
+   "prestige": 4,
+   "influence": 4.16,
+   "marketValue": null,
+   "status": "normal",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 1,
+   "marker": "ge87",
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 1,
+   "badgesSilver": 2,
+   "badgesGold": 1,
+   "wage": 2.2,
+   "releaseFee": 8,
+   "contractType": "formal",
+   "source": "negotiation",
+   "unsatisfied": false,
+   "serviceSeasons": 0,
+   "protected": true,
+   "psIds": [
+    51,
+    55,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    153,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 51,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 55,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 13,
+     "psid": 153,
+     "gold": true,
+     "source": "fc"
+    }
+   ]
+  },
+  {
+   "id": 39,
+   "uid": "fc192985",
+   "name": "Kevin De Bruyne",
+   "officialName": "K. De Bruyne",
+   "number": "17",
+   "clubId": 449,
+   "clubName": "皇家贝蒂斯",
+   "clubLogoKey": "team/12/1788577022968.png",
+   "position": "CM",
+   "positions": [
+    "CM",
+    "CAM"
+   ],
+   "age": 34,
+   "ca": 87,
+   "pa": 87,
+   "foot": 1,
+   "baseCa": 87,
+   "fcId": 192985,
+   "growable": false,
+   "prestige": 4,
+   "influence": 4.16,
+   "marketValue": null,
+   "status": "normal",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 1,
+   "marker": "ge87",
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 1,
+   "badgesSilver": 4,
+   "badgesGold": 1,
+   "wage": 2.91,
+   "releaseFee": 18,
+   "contractType": "formal",
+   "source": "import",
+   "unsatisfied": false,
+   "serviceSeasons": 1.5,
+   "protected": true,
+   "psIds": [
+    4,
+    11,
+    12,
+    16,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    115,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 4,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 11,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 3,
+     "psid": 12,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 4,
+     "psid": 16,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 13,
+     "psid": 115,
+     "gold": true,
+     "source": "fc"
+    }
+   ]
+  }
+ ],
+ "nextCursor": null
+}

@@ -1,0 +1,168 @@
+{
+ "listings": [
+  {
+   "id": 62,
+   "player": {
+    "id": 1260,
+    "fcId": 258601,
+    "name": "Mamadou Sangaré",
+    "position": "CM",
+    "age": 23,
+    "ca": 78,
+    "pa": 84
+   },
+   "sellerClub": {
+    "id": 21,
+    "name": "拜仁慕尼黑"
+   },
+   "type": "normal",
+   "askPrice": 7,
+   "status": "bidding",
+   "listedAt": "2026-11-04T04:29:39.255Z",
+   "lastBidAt": "2026-11-04T04:30:01.491Z",
+   "bidPaused": false,
+   "highestBid": 7,
+   "highestBidder": {
+    "id": 449,
+    "name": "皇家贝蒂斯"
+   },
+   "bidCount": 1,
+   "activatedBy": null,
+   "activationDeadline": null,
+   "matchDeadline": null,
+   "matchPhase": null,
+   "firstBidPending": false,
+   "deadlineAt": "2026-11-05T13:00:00.000Z",
+   "deadlineNote": "截止判定：11月5日 18:00-23:00"
+  },
+  {
+   "id": 41,
+   "player": {
+    "id": 248,
+    "fcId": 278046,
+    "name": "Pau Cubarsí",
+    "position": "CB",
+    "age": 18,
+    "ca": 82,
+    "pa": 88
+   },
+   "sellerClub": {
+    "id": null,
+    "name": "自由身"
+   },
+   "type": "forced",
+   "askPrice": 5,
+   "status": "delisted",
+   "listedAt": "2026-11-01T00:57:36.932Z",
+   "lastBidAt": "2026-11-02T07:56:38.354Z",
+   "bidPaused": false,
+   "highestBid": 20,
+   "highestBidder": null,
+   "bidCount": 12,
+   "activatedBy": null,
+   "activationDeadline": null,
+   "matchDeadline": null,
+   "matchPhase": null,
+   "firstBidPending": false,
+   "deadlineAt": null,
+   "deadlineNote": "已成交"
+  },
+  {
+   "id": 40,
+   "player": {
+    "id": 79,
+    "fcId": 237238,
+    "name": "Scott McTominay",
+    "position": "CM",
+    "age": 28,
+    "ca": 85,
+    "pa": 85
+   },
+   "sellerClub": {
+    "id": null,
+    "name": "自由身"
+   },
+   "type": "forced",
+   "askPrice": 5,
+   "status": "delisted",
+   "listedAt": "2026-11-01T00:57:06.263Z",
+   "lastBidAt": "2026-11-01T01:08:32.026Z",
+   "bidPaused": false,
+   "highestBid": 5,
+   "highestBidder": null,
+   "bidCount": 1,
+   "activatedBy": null,
+   "activationDeadline": null,
+   "matchDeadline": null,
+   "matchPhase": null,
+   "firstBidPending": false,
+   "deadlineAt": null,
+   "deadlineNote": "已成交"
+  },
+  {
+   "id": 60,
+   "player": {
+    "id": 129,
+    "fcId": 251805,
+    "name": "Jurriën Timber",
+    "position": "RB",
+    "age": 24,
+    "ca": 86,
+    "pa": 87
+   },
+   "sellerClub": {
+    "id": 241,
+    "name": "巴塞罗那"
+   },
+   "type": "activation",
+   "askPrice": 20,
+   "status": "delisted",
+   "listedAt": "2026-11-03T11:39:29.613Z",
+   "lastBidAt": "2026-11-03T15:30:40.894Z",
+   "bidPaused": false,
+   "highestBid": 21,
+   "highestBidder": null,
+   "bidCount": 2,
+   "activatedBy": 449,
+   "activationDeadline": null,
+   "matchDeadline": null,
+   "matchPhase": null,
+   "firstBidPending": false,
+   "deadlineAt": null,
+   "deadlineNote": "已成交"
+  },
+  {
+   "id": 61,
+   "player": {
+    "id": 673,
+    "fcId": 258437,
+    "name": "Emanuel Emegha",
+    "position": "ST",
+    "age": 22,
+    "ca": 78,
+    "pa": 83
+   },
+   "sellerClub": {
+    "id": 21,
+    "name": "拜仁慕尼黑"
+   },
+   "type": "normal",
+   "askPrice": 3,
+   "status": "delisted",
+   "listedAt": "2026-11-03T14:53:12.454Z",
+   "lastBidAt": "2026-11-03T14:53:54.562Z",
+   "bidPaused": false,
+   "highestBid": 3,
+   "highestBidder": null,
+   "bidCount": 1,
+   "activatedBy": null,
+   "activationDeadline": null,
+   "matchDeadline": null,
+   "matchPhase": null,
+   "firstBidPending": false,
+   "deadlineAt": null,
+   "deadlineNote": "已成交"
+  }
+ ],
+ "cursor": null
+}

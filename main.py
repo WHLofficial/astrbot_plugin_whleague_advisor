@@ -10,6 +10,13 @@ v0.2.0 数据层（阶段 2）：
 - 任一源失败保留旧值并在 meta 表标降级，/whl状态 可见；
 - whl_* 工具注册在后续版本接入（阶段 4）。
 
+v0.3.0 球员/市场/模型（阶段 3）：
+- 新增 players（活跃名单三态翻页）→ player_attrs（/api/players/meta 每批 90）
+  → scores（工资/可比拟合 + player_scores 预计算）任务链，频率分层热/温/冷；
+- roster（全联盟名字索引）与 market（挂牌/成交/广告板）任务；
+- 拟合系数存 model_params（n/r2/version），估价基线存 player_scores；
+- whl_* 工具注册仍在阶段 4 接入。
+
 装载与注册说明：
 - AstrBot 以 __import__("data.plugins.<目录名>.main") 点路径装载本模块且不把插件目录
   加入 sys.path，因此兄弟模块一律用相对导入（from .status import ...）；
@@ -77,16 +84,25 @@ class WhleagueAdvisorPlugin(Star):
         club = ClubSource(club_base)
         tour = TourSource(tour_base) if tour_base else None
         if tour is None:
-            logger.info("%s：tour_base_url 未配置，只同步赛季与俱乐部", PLUGIN_NAME)
+            logger.info("%s：tour_base_url 未配置，不同步积分与赛程", PLUGIN_NAME)
 
         hot_minutes = self._positive_number("sync_hot_minutes", 5.0)
         warm_minutes = self._positive_number("sync_warm_minutes", 15.0)
+        cold_minutes = self._positive_number("sync_cold_minutes", 60.0)
         ctx = SyncContext(conn=self._conn, club=club, tour=tour)
+        # 频率分层（设计 §4.2）：热 5 分钟（season/standings/fixtures/market）、
+        # 温 15 分钟（clubs/players）、冷 60 分钟（player_attrs/scores/roster）。
+        # tour 未配置时去掉 standings/fixtures 两个依赖 tour 的任务。
         self._scheduler = SyncScheduler(
             ctx,
-            intervals={"season": hot_minutes * 60, "standings": hot_minutes * 60,
-                       "fixtures": hot_minutes * 60, "clubs": warm_minutes * 60},
-            jobs=JOBS if tour is not None else ("season", "clubs"),
+            intervals={
+                "season": hot_minutes * 60, "standings": hot_minutes * 60,
+                "fixtures": hot_minutes * 60, "market": hot_minutes * 60,
+                "clubs": warm_minutes * 60, "players": warm_minutes * 60,
+                "player_attrs": cold_minutes * 60, "scores": cold_minutes * 60,
+                "roster": cold_minutes * 60,
+            },
+            jobs=JOBS if tour is not None else tuple(j for j in JOBS if j not in ("standings", "fixtures")),
         )
         await self._scheduler.start()
 

@@ -1,6 +1,9 @@
 -- WHL 联赛顾问插件本地库 schema（阶段 2：赛季 / 赛事 / 俱乐部 / 积分榜 / 赛程）。
 -- 设计依据：docs/astrbot-league-advisor-design.md §4.3（表清单）、§4.4（写入与失败语义）。
 --
+-- 累计 schema = 各迁移正文（schema.sql + schema_stage3.sql）按版本号顺序拼接；
+-- 本文件是 1 号迁移正文，后续新增表进对应版本迁移文件，不回改本文件。
+--
 -- 约定：
 -- * 时间一律存 UTC ISO-8601 文本（utc_now_iso 产出，形如 2026-11-05T00:48:00+00:00）；
 -- * JSON 一律存 TEXT；

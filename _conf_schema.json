@@ -19,14 +19,20 @@
   },
   "sync_hot_minutes": {
     "description": "热层同步间隔（分钟）",
-    "hint": "赛季 / 积分榜 / 赛程的刷新间隔，默认 5 分钟。",
+    "hint": "赛季 / 积分榜 / 赛程 / 挂牌与成交 / 转会广告板的刷新间隔，默认 5 分钟。",
     "type": "int",
     "default": 5
   },
   "sync_warm_minutes": {
     "description": "温层同步间隔（分钟）",
-    "hint": "俱乐部列表的刷新间隔，默认 15 分钟。",
+    "hint": "俱乐部列表与活跃球员名单的刷新间隔，默认 15 分钟。",
     "type": "int",
     "default": 15
+  },
+  "sync_cold_minutes": {
+    "description": "冷层同步间隔（分钟）",
+    "hint": "全联盟名册索引 / 球员属性预取（/api/players/meta 每批 90）/ 估价模型重拟合的刷新间隔，默认 60 分钟。",
+    "type": "int",
+    "default": 60
   }
 }

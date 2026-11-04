@@ -1,0 +1,110 @@
+{
+ "players": [
+  {
+   "id": 1260,
+   "uid": "fc258601",
+   "name": "Mamadou Sangaré",
+   "officialName": "M. Sangaré",
+   "number": "24",
+   "clubId": 21,
+   "clubName": "拜仁慕尼黑",
+   "clubLogoKey": "team/14/1788576953568.png",
+   "position": "CM",
+   "positions": [
+    "CM",
+    "CDM",
+    "CAM"
+   ],
+   "age": 23,
+   "ca": 78,
+   "pa": 84,
+   "foot": 0,
+   "baseCa": 76,
+   "fcId": 258601,
+   "growable": true,
+   "prestige": 1,
+   "influence": 1.5,
+   "marketValue": null,
+   "status": "listed",
+   "transferListed": false,
+   "notForSale": false,
+   "transferPriced": false,
+   "growthTier": 1,
+   "marker": null,
+   "isFutureStar": false,
+   "chinaPlan": false,
+   "agentTier": 3,
+   "badgesSilver": 7,
+   "badgesGold": 0,
+   "wage": 1.63,
+   "releaseFee": 10,
+   "contractType": "formal",
+   "source": "import",
+   "unsatisfied": false,
+   "serviceSeasons": 0.5,
+   "protected": true,
+   "psIds": [
+    8,
+    13,
+    16,
+    23,
+    25,
+    31,
+    42,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "playstyles": [
+    {
+     "slot": 1,
+     "psid": 8,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 2,
+     "psid": 13,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 3,
+     "psid": 16,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 4,
+     "psid": 23,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 5,
+     "psid": 25,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 6,
+     "psid": 31,
+     "gold": false,
+     "source": "fc"
+    },
+    {
+     "slot": 7,
+     "psid": 42,
+     "gold": false,
+     "source": "fc"
+    }
+   ]
+  }
+ ],
+ "nextCursor": null
+}

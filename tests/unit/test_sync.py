@@ -68,16 +68,14 @@ class FakeClock:
 
 
 class TestFullSyncSuccess:
-    def test_full_sync_writes_all_tables_and_meta(self, club_routes, tour_routes):
-        """season → clubs → standings → fixtures 全绿：四张表 + meta + sync_runs。"""
+    def test_full_sync_writes_all_tables_and_meta(self, all_routes):
+        """九任务全绿：老四表 + 阶段 3 球员/名册/属性/市场/估价 + meta + sync_runs。"""
         conn = mem_conn()
         try:
-            transport = FixtureTransport({**club_routes, **tour_routes})
+            transport = FixtureTransport(all_routes)
             outcomes = run(run_full_sync(make_ctx(conn, transport)))
 
-            assert [(o.job, o.status) for o in outcomes] == [
-                ("season", "ok"), ("clubs", "ok"), ("standings", "ok"), ("fixtures", "ok"),
-            ]
+            assert [(o.job, o.status) for o in outcomes] == [(job, "ok") for job in JOBS]
             seasons = conn.execute("SELECT * FROM seasons").fetchall()
             assert len(seasons) == 1
             assert seasons[0]["season"] == 9
@@ -95,6 +93,17 @@ class TestFullSyncSuccess:
             assert conn.execute("SELECT COUNT(*) n FROM standings").fetchone()["n"] == 56
             assert conn.execute("SELECT COUNT(*) n FROM fixtures").fetchone()["n"] == 226
 
+            # 阶段 3：球员三态 6+1+4、meta 命中 6 人、roster 40 行、市场三表、基线 11 行
+            assert conn.execute("SELECT COUNT(*) n FROM players").fetchone()["n"] == 11
+            assert conn.execute("SELECT COUNT(*) n FROM players WHERE active=1").fetchone()["n"] == 11
+            assert conn.execute("SELECT COUNT(*) n FROM player_attrs").fetchone()["n"] == 6
+            assert conn.execute("SELECT COUNT(*) n FROM player_index").fetchone()["n"] == 40
+            assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == 5
+            assert conn.execute("SELECT COUNT(*) n FROM deals").fetchone()["n"] == 11
+            assert conn.execute("SELECT COUNT(*) n FROM transfer_board").fetchone()["n"] == 16
+            assert conn.execute("SELECT COUNT(*) n FROM player_scores").fetchone()["n"] == 11
+            assert conn.execute("SELECT COUNT(*) n FROM model_params").fetchone()["n"] == 2
+
             snap = dao.collect_status_snapshot(conn)
             assert set(snap["last_success"]) == set(JOBS)
             assert snap["degraded"] == {}
@@ -102,8 +111,9 @@ class TestFullSyncSuccess:
             runs = {r["job"]: dict(r) for r in conn.execute("SELECT * FROM sync_runs")}
             assert {job: runs[job]["status"] for job in JOBS} == {j: "ok" for j in JOBS}
             assert runs["clubs"]["rows"] == 20
-            assert runs["standings"]["rows"] == 56
-            assert runs["fixtures"]["rows"] == 226
+            assert runs["players"]["rows"] == 11
+            assert runs["roster"]["rows"] == 40
+            assert runs["market"]["rows"] == 5 + 11 + 16
         finally:
             conn.close()
 
@@ -173,12 +183,13 @@ class TestFailureKeepsOldValues:
         finally:
             conn.close()
 
-    def test_season_failure_first_run_skips_dependents(self, club_routes):
-        """首次同步赛季就挂：tournaments 表为空 → standings/fixtures 跳过不崩。"""
+    def test_season_failure_first_run_skips_dependents(self, all_routes):
+        """首次同步赛季就挂：tournaments 表为空 → standings/fixtures 跳过不崩；
+        与赛季无关的 players/attrs/scores/roster/market 照常成功（降级不中断）。"""
         conn = mem_conn()
         try:
             transport = FixtureTransport({
-                **club_routes,
+                **all_routes,
                 "/api/seasons/current": ConnectionError("模拟赛季接口挂了"),
                 "/api/public/tournaments": ConnectionError("模拟赛事列表挂了"),
             })
@@ -186,27 +197,36 @@ class TestFailureKeepsOldValues:
             by_job = {o.job: o for o in outcomes}
             assert by_job["season"].status == "failed"
             assert by_job["clubs"].status == "ok"  # clubs 不依赖赛季
+            assert by_job["players"].status == "ok"
+            assert by_job["player_attrs"].status == "ok"
+            assert by_job["scores"].status == "ok"
+            assert by_job["roster"].status == "ok"
+            assert by_job["market"].status == "ok"
             assert by_job["standings"].status == "skipped"
             assert by_job["fixtures"].status == "skipped"
             snap = dao.collect_status_snapshot(conn)
             assert "season" in snap["degraded"]
             assert "standings" not in snap["degraded"]  # 跳过不算失败，不标降级
+            assert "players" not in snap["degraded"]
             runs = {r["job"]: r["status"] for r in conn.execute("SELECT job, status FROM sync_runs")}
-            assert runs == {"season": "failed", "clubs": "ok", "standings": "skipped", "fixtures": "skipped"}
+            assert runs == {
+                "season": "failed", "clubs": "ok", "players": "ok", "player_attrs": "ok",
+                "scores": "ok", "roster": "ok", "market": "ok",
+                "standings": "skipped", "fixtures": "skipped",
+            }
         finally:
             conn.close()
 
-    def test_season_failure_after_success_uses_stored_tournaments(self, club_routes, tour_routes):
+    def test_season_failure_after_success_uses_stored_tournaments(self, all_routes):
         """赛季挂过一次后再同步：用库里旧赛事 id 继续积分/赛程（降级不中断）。"""
         conn = mem_conn()
         try:
-            good = FixtureTransport({**club_routes, **tour_routes})
+            good = FixtureTransport(all_routes)
             run(run_full_sync(make_ctx(conn, good)))
             before = [tuple(r) for r in conn.execute("SELECT * FROM tournaments ORDER BY id")]
 
             bad = FixtureTransport({
-                **club_routes,
-                **tour_routes,
+                **all_routes,
                 "/api/seasons/current": ConnectionError("赛季接口挂了"),
                 "/api/public/tournaments": ConnectionError("赛事列表挂了"),
             })
@@ -265,13 +285,13 @@ class TestFailureKeepsOldValues:
 
 
 class TestScheduler:
-    def test_cycle_runs_due_jobs_once(self, club_routes, tour_routes):
-        """首轮全跑；紧接着的第二轮全部未到期 → 空转。"""
+    def test_cycle_runs_due_jobs_once(self, all_routes):
+        """首轮全跑（九任务）；紧接着的第二轮全部未到期 → 空转。"""
         conn = mem_conn()
         try:
             clock = FakeClock()
             scheduler = SyncScheduler(
-                make_ctx(conn, FixtureTransport({**club_routes, **tour_routes}), clock=clock),
+                make_ctx(conn, FixtureTransport(all_routes), clock=clock),
                 jitter=0, clock=clock,
             )
             first = run(scheduler.run_cycle())
@@ -281,12 +301,12 @@ class TestScheduler:
         finally:
             conn.close()
 
-    def test_failure_backoff_and_recovery(self, club_routes, tour_routes):
+    def test_failure_backoff_and_recovery(self, all_routes):
         """失败退避 30s→120s→600s，成功清零回常规间隔，meta 降级随之清除。"""
         conn = mem_conn()
         try:
             clock = FakeClock()
-            base = FixtureTransport({**club_routes, **tour_routes})
+            base = FixtureTransport(all_routes)
             transport = SelectiveFailTransport(base, ("/api/clubs",))
             scheduler = SyncScheduler(make_ctx(conn, transport, clock=clock), jitter=0, clock=clock)
 
@@ -317,7 +337,7 @@ class TestScheduler:
         finally:
             conn.close()
 
-    def test_concurrent_cycles_serialize_on_lock(self, club_routes, tour_routes):
+    def test_concurrent_cycles_serialize_on_lock(self, all_routes):
         """两轮并发 run_cycle：持锁串行，无 SQLite 锁冲突，任务不重复跑。"""
 
         class SlowTransport(FixtureTransport):
@@ -329,7 +349,7 @@ class TestScheduler:
             conn = mem_conn()
             try:
                 scheduler = SyncScheduler(
-                    make_ctx(conn, SlowTransport({**club_routes, **tour_routes})),
+                    make_ctx(conn, SlowTransport(all_routes)),
                     jitter=0,
                 )
                 return await asyncio.gather(scheduler.run_cycle(), scheduler.run_cycle())
@@ -337,7 +357,7 @@ class TestScheduler:
                 conn.close()
 
         first, second = run(scenario())
-        assert len(first) == 4 and all(o.status == "ok" for o in first)
+        assert len(first) == len(JOBS) and all(o.status == "ok" for o in first)
         assert second == []  # 第二轮等锁后全部未到期
 
     def test_start_stop_lifecycle(self, club_routes, tour_routes):

@@ -7,7 +7,7 @@
 import re
 
 PLUGIN_NAME = "astrbot_plugin_whleague_advisor"
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.3.0"
 
 # 默认配置（两空）下 /whl_status 的唯一回复：一句「未配置」，零网络请求。
 MSG_UNCONFIGURED = (
@@ -31,7 +31,17 @@ MSG_READY = (
     "{sync_summary}"
 )
 
-_JOB_LABELS = {"season": "赛季", "clubs": "俱乐部", "standings": "积分榜", "fixtures": "赛程"}
+_JOB_LABELS = {
+    "season": "赛季", "clubs": "俱乐部", "players": "球员", "player_attrs": "属性",
+    "scores": "估价", "roster": "名册", "market": "市场", "standings": "积分榜", "fixtures": "赛程",
+}
+
+# 行数小节展示的表（按 dao.table_counts 键 → 标签），只挑工具层关心的
+_COUNT_LABELS = (
+    ("clubs", "俱乐部"), ("players", "球员"), ("player_index", "名册"),
+    ("player_scores", "估价行"), ("listings", "挂牌"), ("deals", "成交"),
+    ("transfer_board", "广告板"), ("standings", "积分行"), ("fixtures", "赛程"),
+)
 
 
 def format_clock(iso: str | None) -> str:
@@ -74,9 +84,7 @@ def build_sync_summary(snapshot: dict) -> str:
         else:
             lines.append(f"· {label}：尚未运行")
     line_counts = "，".join(
-        f"{label} {counts[key]}"
-        for key, label in (("clubs", "俱乐部"), ("standings", "积分行"), ("fixtures", "赛程"))
-        if key in counts
+        f"{label} {counts[key]}" for key, label in _COUNT_LABELS if key in counts
     )
     if line_counts:
         lines.append(f"· 行数：{line_counts}")
