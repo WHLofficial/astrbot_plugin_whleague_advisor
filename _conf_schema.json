@@ -1,0 +1,20 @@
+{
+  "enabled_groups": {
+    "description": "启用的群号列表",
+    "hint": "留空（默认）= 插件空转：不联网、不注册任何工具。填入群号后对应群才会启用联赛问答。",
+    "type": "list",
+    "default": []
+  },
+  "club_base_url": {
+    "description": "club 数据源地址",
+    "hint": "自备的 club 数据源基础地址（公开只读接口），留空（默认）= 不启动同步、不注册任何工具。",
+    "type": "string",
+    "default": ""
+  },
+  "tour_base_url": {
+    "description": "tour 数据源地址",
+    "hint": "自备的 tour 数据源基础地址（公开只读接口），留空（默认）= 不同步积分与赛程。",
+    "type": "string",
+    "default": ""
+  }
+}

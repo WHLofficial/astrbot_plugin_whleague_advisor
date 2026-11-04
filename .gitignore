@@ -1,0 +1,25 @@
+# 私有：设计文档含服务器 IP、容器名、内部群号，不进公开仓
+docs/
+
+# 私有：交接文档、会话记录（含服务器 IP 与真实群号），不进公开仓
+HANDOFF.md
+handoff-*.md
+.zcode/
+
+# 私有：评测题集，阶段 6 再决定是否进仓（HANDOFF §6）
+tests/eval/
+
+# 运行期数据（含真实球员数据与群内对话）
+advisor.db
+advisor.db-*
+snapshot/
+reports/
+
+# 本地配置与密钥
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
