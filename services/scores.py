@@ -232,9 +232,9 @@ def evaluate_player(player: dict, attrs: dict | None, baseline: dict, model: Mod
     role_n = None
     adjustments: list[dict] = []
     if player.get("status") == "trainee":
-        # 设计 §5.3 明文公式：activationFee(rc, protection_ticks, ticks) + TRAINEE_ACTIVATION_FEE=5
-        # （训练营双固定 RC=5、无保护期 → activationFee 1 倍；公式细节见 formula.trainee_activation_cost）
-        cost = trainee_activation_cost(rc)
+        # 平台口径（activations.ts:98 三元分支）：学员激活价恒 TRAINEE_ACTIVATION_FEE=5m，
+        # 不乘 RC 倍数；2026-11-05 用户拍板，设计 §5.3 原求和公式作废
+        cost = trainee_activation_cost()
         fair_low = fair_mid = fair_high = float(cost)
         fair_source = "trainee_activation"
         confidence = "low"

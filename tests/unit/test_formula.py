@@ -102,19 +102,11 @@ class TestExpectedWage:
 
 
 class TestTraineeActivationCost:
-    def test_design_53_formula_sums_to_ten(self):
-        """设计 §5.3：activationFee(rc, None, t) + TRAINEE_ACTIVATION_FEE=5。
-
-        训练营双固定（RC=5、无保护期）→ activationFee 1 倍 = 5 → 5 + 5 = 10。
-        """
-        assert formula.activation_fee(5, None, 0) == 5
-        assert formula.trainee_activation_cost(5) == 10.0
-        assert formula.trainee_activation_cost(None) == 10.0  # rc 缺失按双固定兜底
-        assert formula.trainee_activation_cost(0) == 10.0
-
-    def test_follows_rc_if_upstream_deviates_from_dual_fixed(self):
-        """公式不写死 5：若上游 rc 变化（如 10），成本跟随公式 → 10+5=15。"""
-        assert formula.trainee_activation_cost(10) == 15.0
+    def test_platform_branch_is_flat_five(self):
+        """平台口径（activations.ts:98 三元分支）：学员激活价恒 TRAINEE_ACTIVATION_FEE=5m，
+        与 RC 无关；2026-11-05 用户拍板，取代设计 §5.3 原求和公式（曾得 10m）。"""
+        assert formula.activation_fee(5, None, 0) == 5  # activationFee 本体不受影响
+        assert formula.trainee_activation_cost() == 5.0
 
 
 class TestAgeAdjustments:

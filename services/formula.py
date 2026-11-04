@@ -191,18 +191,15 @@ def expected_wage(level: float, release_fee: float, a: float, b: float, c: float
     return round2(a * (level**b) * (release_fee**c))
 
 
-def trainee_activation_cost(release_fee: float | None) -> float:
-    """学员参考激活成本（设计 §5.3 明文公式）：activationFee(rc, None, t) + TRAINEE_ACTIVATION_FEE。
+def trainee_activation_cost() -> float:
+    """学员参考激活成本（平台口径，2026-11-05 用户拍板）：恒为 TRAINEE_ACTIVATION_FEE。
 
-    训练营合同双固定（negotiation-rules.ts:5）：RC 恒 5m、无保护期（protection_ticks=NULL，
-    bypass-rules.ts:41 isProtected 对 None 恒 False）→ activationFee 恒 1 倍即 RC 本体；
-    上游 rc 缺失/非正数按双固定的 TRAINEE_RELEASE_FEE 兜底（当前数据恒得 5 + 5 = 10）。
-    ⚠️ 口径差异已上报：平台实现（activations.ts:92-95）是三元分支，isTrainee 直接收
-    固定 TRAINEE_ACTIVATION_FEE=5m、不走求和；设计文档为唯一事实源（285/307 两行明文求和），
-    本插件按设计公式实现，待用户裁决是否回改为平台口径。
+    平台实现（activations.ts:98-101）是三元分支：askPrice = isTrainee
+    ? TRAINEE_ACTIVATION_FEE : activationFee(...)——学员激活不乘 RC 倍数、不走求和，
+    恒收 5m。设计 §5.3 原写的「activationFee + 5」求和口径与平台不符，已按用户裁决
+    以平台为准（设计副本 285/307 行同步更正），原实现 5 + 5 = 10 作废。
     """
-    base = release_fee if release_fee is not None and release_fee > 0 else TRAINEE_RELEASE_FEE
-    return activation_fee(base, None, 0) + TRAINEE_ACTIVATION_FEE
+    return float(TRAINEE_ACTIVATION_FEE)
 
 
 # ---- 年龄/潜力小幅校正（§5.3）----
