@@ -185,26 +185,34 @@ def _escape_like(text: str) -> str:
 
 
 def _search_players(conn, folded: str) -> tuple[list[dict], str]:
-    """players 表（活跃名单）按折叠名搜索。返回 (行列表, 匹配方式)。"""
+    """players 表（活跃名单）按折叠名搜索，两列都试。
+
+    search_name = display_name 折叠（中文现译后的拉丁名走这里）；
+    LOWER(name) = FC 官方拉丁名原样小写（officialName 缩写如 "M. Tillman"
+    只有这一列有）。SQLite LOWER 只做 ASCII 小写，与 ASCII 官方名等价；
+    带变音符的官方名仍由 display_name 路径覆盖。返回 (行列表, 匹配方式)。
+    """
     like = _escape_like(folded)
     rows = conn.execute(
         "SELECT p.*, c.name AS club_name FROM players p LEFT JOIN clubs c ON c.id = p.club_id "
-        "WHERE p.active = 1 AND p.search_name = ? ORDER BY p.id",
-        (folded,),
+        "WHERE p.active = 1 AND (p.search_name = ? OR LOWER(COALESCE(p.name, '')) = ?) ORDER BY p.id",
+        (folded, folded),
     ).fetchall()
     if rows:
         return [dict(r) for r in rows], "exact"
     rows = conn.execute(
         "SELECT p.*, c.name AS club_name FROM players p LEFT JOIN clubs c ON c.id = p.club_id "
-        "WHERE p.active = 1 AND p.search_name LIKE ? ESCAPE '\\' ORDER BY p.id LIMIT ?",
-        (like + "%", _PLAYER_CANDIDATES_MAX + 1),
+        "WHERE p.active = 1 AND (p.search_name LIKE ? ESCAPE '\\' "
+        "OR LOWER(COALESCE(p.name, '')) LIKE ? ESCAPE '\\') ORDER BY p.id LIMIT ?",
+        (like + "%", like + "%", _PLAYER_CANDIDATES_MAX + 1),
     ).fetchall()
     if rows:
         return [dict(r) for r in rows], "prefix"
     rows = conn.execute(
         "SELECT p.*, c.name AS club_name FROM players p LEFT JOIN clubs c ON c.id = p.club_id "
-        "WHERE p.active = 1 AND p.search_name LIKE ? ESCAPE '\\' ORDER BY p.id LIMIT ?",
-        ("%" + like + "%", _PLAYER_CANDIDATES_MAX + 1),
+        "WHERE p.active = 1 AND (p.search_name LIKE ? ESCAPE '\\' "
+        "OR LOWER(COALESCE(p.name, '')) LIKE ? ESCAPE '\\') ORDER BY p.id LIMIT ?",
+        ("%" + like + "%", "%" + like + "%", _PLAYER_CANDIDATES_MAX + 1),
     ).fetchall()
     if rows:
         return [dict(r) for r in rows], "substring"
@@ -293,10 +301,17 @@ def resolve_player(
 
     if cache is not None:
         cache.remember_negative(name)
+    if _HAS_ASCII.search(name):
+        hint = (
+            "输入已是拉丁名：试试官方名的其他写法（全称或缩写，如 Salah / M. Salah），"
+            "或用 fc_id 直接定位"
+        )
+    else:
+        hint = "库里只有拉丁名：请先把中文译成拉丁名（如 萨拉赫 → Mohamed Salah）再调用一次"
     raise ToolError(
         NOT_FOUND,
         f"没有找到球员「{name}」",
-        hint="库里只有拉丁名：请先把中文译成拉丁名（如 萨拉赫 → Mohamed Salah）再调用一次",
+        hint=hint,
     )
 
 

@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.4.0，工具层接入）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.5.0）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -146,7 +146,8 @@ class WhleagueAdvisorPlugin(Star):
             },
             jobs=JOBS if tour is not None else tuple(j for j in JOBS if j not in ("standings", "fixtures")),
         )
-        await self._scheduler.start()
+
+        groups_raw = self.config.get("enabled_groups")
 
         groups_raw = self.config.get("enabled_groups")
         allowed = {str(g) for g in _as_group_list(groups_raw)}
@@ -172,6 +173,9 @@ class WhleagueAdvisorPlugin(Star):
             ),
             allowed_groups=allowed or None,
         )
+        # 先装配后启动：装配中途抛异常时调度器从未启动，initialize 的
+        # 「保持加载但不做同步」兜底才真实成立（原顺序会在异常路径漏停后台同步）
+        await self._scheduler.start()
 
     def _positive_number(self, key: str, default: float) -> float:
         try:

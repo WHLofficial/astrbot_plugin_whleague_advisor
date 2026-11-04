@@ -154,7 +154,7 @@ def build_value_summary(data: dict) -> str:
     if data.get("kind") == "trainee":
         cost = fair.get("mid")
         return (
-            f"学员（训练营合同）不给市场估价；参考激活成本 {cost:g}m（激活费公式，含固定 5m）。"
+            f"学员（训练营合同）不给市场估价；参考激活成本 {cost:g}m（平台固定，不乘 RC）。"
             if cost is not None else "学员（训练营合同）不给市场估价。"
         )
     parts: list[str] = []

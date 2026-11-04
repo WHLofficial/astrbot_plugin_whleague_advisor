@@ -117,7 +117,7 @@ async def run_job(ctx: SyncContext, job: str) -> JobOutcome:
 
 
 async def run_full_sync(ctx: SyncContext, jobs: tuple[str, ...] = JOBS) -> list[JobOutcome]:
-    """按依赖顺序整轮同步：season → clubs → standings → fixtures。"""
+    """按依赖顺序整轮同步（九任务口径见模块头 JOBS：season → clubs → players → player_attrs → market → scores → roster → standings → fixtures）。"""
     outcomes = []
     for job in jobs:
         outcomes.append(await run_job(ctx, job))

@@ -60,11 +60,12 @@ async def call_tool(ctx: ToolContext, name: str, args: dict, call: CallContext) 
                 "本群未启用 WHL 联赛问答",
                 hint="告诉用户该群不在插件启用名单里",
             ))
-        ctx.limiter.check_and_consume(call.group_id, call.sender_id)
         module, spec = TOOLS[name]
         normalized = _validate(spec, args)
         if name in ("whl_player_value", "whl_compare_players"):
             normalized["assumptions"] = check_assumptions(normalized.get("assumptions"))
+        # 配额只记真执行的调用：BAD_ARG 在校验阶段就已挡掉，不消耗窗口
+        ctx.limiter.check_and_consume(call.group_id, call.sender_id)
         result = module.run(ctx, call, normalized)
         if inspect.isawaitable(result):
             result = await result

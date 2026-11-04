@@ -329,6 +329,20 @@ class TestPlayerLookup:
     def test_latin_miss_not_found_with_hint(self, ctx):
         env = call(ctx, "whl_player_lookup", {"name": "Nobody Here"})
         assert env["error"]["code"] == "NOT_FOUND"
+        # 拉丁输入的 hint 不该再让人「译成拉丁名」（官方缩写场景，审查 low）
+        assert "译成拉丁名" not in (env["hint"] or "")
+        assert "官方名" in (env["hint"] or "") or "fc_id" in (env["hint"] or "")
+
+    def test_official_name_hit(self, conn):
+        """官方缩写名（officialName 列）也能命中：FC 缩写只存在于 name 列。"""
+        kane = next(r for r in dao.read_active_players(conn) if r["display_name"] == "Harry Kane")
+        conn.execute("UPDATE players SET name = 'M. Kane' WHERE id = ?", (kane["id"],))
+        try:
+            env = call(build_tool_ctx(conn), "whl_player_lookup", {"name": "M. Kane"})
+            assert env["ok"] is True
+            assert env["data"]["player"]["name"] == "Harry Kane"
+        finally:
+            conn.execute("UPDATE players SET name = ? WHERE id = ?", (kane.get("name"), kane["id"]))
 
     def test_ambiguous_candidates_carry_club_position_age(self, conn):
         """同名多候选 → AMBIGUOUS，候选带 clubName/position/age（§4.7）。"""

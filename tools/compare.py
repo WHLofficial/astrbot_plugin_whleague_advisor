@@ -52,9 +52,8 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         model_meta = valuation_advice.model_meta_from_rows(model_rows)
         a_row = _evaluate(a, attrs_by_fc, baseline, model, assumptions)
         b_row = _evaluate(b, attrs_by_fc, baseline, model, assumptions)
-        scenario = True
-    else:
-        scenario = False
+    # 只有真带了假设才算「假设场景」；基线缺行触发的重算用的仍是当前真实基线
+    scenario = bool(assumptions)
 
     a_data = valuation_advice.row_to_value_data(_merge_player(a, a_row), model_meta)
     b_data = valuation_advice.row_to_value_data(_merge_player(b, b_row), model_meta)
