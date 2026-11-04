@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .dao import get_meta, set_meta
+from .dao import get_meta, safe_rollback, set_meta
 
 SCHEMA_VERSION_KEY = "schema_version"
 
@@ -57,7 +57,7 @@ def run_migrations(
         try:
             conn.executescript(f"BEGIN IMMEDIATE;\n{sql}\nCOMMIT;")
         except BaseException:
-            _safe_rollback(conn)
+            safe_rollback(conn)
             raise
         _write_version(conn, version)
         applied.append(version)
@@ -76,11 +76,3 @@ def _read_version(conn: sqlite3.Connection) -> int:
 
 def _write_version(conn: sqlite3.Connection, version: int) -> None:
     set_meta(conn, SCHEMA_VERSION_KEY, str(version))
-
-
-def _safe_rollback(conn: sqlite3.Connection) -> None:
-    """回滚失败的迁移事务；若事务本就没开起来（如 BEGIN 被锁拒绝），忽略。"""
-    try:
-        conn.execute("ROLLBACK")
-    except sqlite3.OperationalError:
-        pass

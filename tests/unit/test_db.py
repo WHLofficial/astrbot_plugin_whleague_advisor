@@ -169,6 +169,40 @@ class TestSyncRuns:
         assert latest["season"]["status"] == "ok"
 
 
+class _FlakyCommitConn(sqlite3.Connection):
+    """模拟 COMMIT 自身失败（如 busy 超时）的连接。"""
+
+    fail_next_commit = False
+
+    def execute(self, sql, *args, **kwargs):
+        if self.fail_next_commit and sql.strip().upper() == "COMMIT":
+            self.fail_next_commit = False
+            raise sqlite3.OperationalError("database is locked (模拟 COMMIT 失败)")
+        return super().execute(sql, *args, **kwargs)
+
+
+class TestTransaction:
+    def test_commit_failure_rolls_back_and_connection_stays_usable(self, tmp_path):
+        """COMMIT 失败也要回滚，不留悬挂事务（审查修复回归）。"""
+        conn = sqlite3.connect(
+            str(tmp_path / "t.db"), isolation_level=None, factory=_FlakyCommitConn
+        )
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            migrations.run_migrations(conn)
+            with pytest.raises(sqlite3.OperationalError):
+                with dao.transaction(conn):
+                    dao.set_meta(conn, "during", "1")
+                    conn.fail_next_commit = True
+            # during 已回滚；连接回到 autocommit 可用状态
+            assert dao.get_meta(conn, "during") is None
+            dao.set_meta(conn, "after", "1")
+            assert dao.get_meta(conn, "after") == "1"
+        finally:
+            conn.close()
+
+
 class TestUpserts:
     def test_upsert_season_single_row(self, migrated_conn):
         kw = dict(season=9, status="running", window_seq=2, window_status="open",

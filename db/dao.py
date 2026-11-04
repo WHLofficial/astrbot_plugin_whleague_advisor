@@ -46,19 +46,28 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def safe_rollback(conn: sqlite3.Connection) -> None:
+    """尽力回滚；若事务本就没开起来（如 BEGIN 被锁拒绝），忽略。"""
+    try:
+        conn.execute("ROLLBACK")
+    except sqlite3.OperationalError:
+        pass
+
+
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """单写者事务：BEGIN IMMEDIATE ... COMMIT，异常时 ROLLBACK 并继续抛出。"""
+    """单写者事务：BEGIN IMMEDIATE ... COMMIT，异常时 ROLLBACK 并继续抛出。
+
+    COMMIT 自身失败（如 busy 超时）也走回滚，保证不把调用方留在悬挂事务里
+    ——否则后续 meta 写入会落入未提交事务、随连接关闭而丢失。
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
+        conn.execute("COMMIT")
     except BaseException:
-        try:
-            conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            pass
+        safe_rollback(conn)
         raise
-    conn.execute("COMMIT")
 
 
 # ---- meta ----
