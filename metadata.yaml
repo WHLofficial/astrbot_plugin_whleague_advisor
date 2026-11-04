@@ -1,7 +1,7 @@
 name: astrbot_plugin_whleague_advisor # 插件唯一识别名，必须与仓库名一致（本地安装校验 plugin_path.name != plugin_name 直接拒）
 display_name: WHL 联赛顾问
 desc: WHL 联赛只读问答顾问：联赛积分、球队、球员、转会市场与身价参考。回答中的每个数字都来自 whl_* 工具返回，可溯源。数据来自自备数据源同步的本地 SQLite；未配置时默认空转，不联网、不注册任何工具。
-version: 0.3.0
+version: 0.4.0
 author: WHLofficial
 repo: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor
 support_platforms:

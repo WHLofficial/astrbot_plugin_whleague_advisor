@@ -87,16 +87,18 @@ class TestMigrations:
         assert migrations.run_migrations(raw_conn, migrations.MIGRATIONS + (good,)) == [version]
 
     def test_stage3_migration_adds_player_tables(self, raw_conn):
-        """2 号迁移给旧库补阶段 3 表；1 号库（旧版快照）升级后版本号到 2。"""
+        """2 号迁移给旧库补阶段 3 表；再跑一次补阶段 4 身份表，版本号到 CURRENT_VERSION。"""
         migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:1])  # 只跑 1 号
         assert dao.get_schema_version(raw_conn) == 1
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert "players" not in names
-        assert migrations.run_migrations(raw_conn) == [2]
+        assert migrations.run_migrations(raw_conn) == [2, 3]
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert {"players", "player_index", "player_attrs", "player_scores",
                 "model_params", "listings", "deals", "transfer_board"} <= names
-        assert dao.get_schema_version(raw_conn) == 2
+        # 阶段 4：身份与工具层支撑表
+        assert {"group_members", "name_translations", "team_aliases"} <= names
+        assert dao.get_schema_version(raw_conn) == migrations.CURRENT_VERSION
 
     def test_migration_bodies_concatenate_to_full_schema(self, raw_conn):
         """累计 schema = 各迁移正文按版本号拼接：拼起来执行 ≡ run_migrations 产物。"""

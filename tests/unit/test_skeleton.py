@@ -48,25 +48,34 @@ def _module(name, **attrs):
 
 @pytest.fixture()
 def fake_astrbot(monkeypatch):
-    """在 sys.modules 里装一个最小的 astrbot，记录 @filter.command 参数。"""
-    captured = {"commands": []}
+    """在 sys.modules 里装一个最小的 astrbot，记录 @filter 装配参数。"""
+    captured = {"commands": [], "llm_tools": [], "event_message_type": []}
+
+    def _passthrough():
+        def decorator(fn):
+            return fn
+
+        return decorator
 
     class _FakeFilter:
         @staticmethod
         def command(command_name, *args, **kwargs):
             captured["commands"].append(command_name)
-
-            def decorator(fn):
-                return fn
-
-            return decorator
+            return _passthrough()
 
         @staticmethod
         def permission_type(permission_type, raise_error=True, **kwargs):
-            def decorator(fn):
-                return fn
+            return _passthrough()
 
-            return decorator
+        @staticmethod
+        def llm_tool(name=None, *args, **kwargs):
+            captured["llm_tools"].append(name)
+            return _passthrough()
+
+        @staticmethod
+        def event_message_type(event_type, *args, **kwargs):
+            captured["event_message_type"].append(str(event_type))
+            return _passthrough()
 
     fake_astrbot_mod = _module("astrbot")
     fake_api = _module("astrbot.api", logger=logging.getLogger("fake_astrbot"))
@@ -78,10 +87,13 @@ def fake_astrbot(monkeypatch):
     fake_filter_mod = _module(
         "astrbot.api.event.filter",
         PermissionType=type("PermissionType", (), {"ADMIN": "ADMIN", "MEMBER": "MEMBER"}),
+        EventMessageType=type("EventMessageType", (), {"ALL": "ALL", "GROUP_MESSAGE": "GROUP_MESSAGE"}),
     )
     fake_filter = _FakeFilter()
     fake_filter_mod.permission_type = fake_filter.permission_type
     fake_filter_mod.command = fake_filter.command
+    fake_filter_mod.llm_tool = fake_filter.llm_tool
+    fake_filter_mod.event_message_type = fake_filter.event_message_type
     fake_event.filter = fake_filter_mod
     fake_star = _module(
         "astrbot.api.star",
@@ -139,10 +151,19 @@ def _import_main_as_package_submodule(monkeypatch):
     return module
 
 
+EXPECTED_LLM_TOOLS = (
+    "whl_league_brief", "whl_team_brief", "whl_player_lookup", "whl_market_board",
+    "whl_player_value", "whl_compare_players", "whl_match_lookup", "whl_rules_lookup",
+)
+
+
 def test_main_module_imports_as_package_submodule(fake_astrbot, monkeypatch):
     module = _import_main_as_package_submodule(monkeypatch)
     assert fake_astrbot["commands"] == [EXPECTED_COMMAND]
     assert hasattr(module, "WhleagueAdvisorPlugin")
+    # 阶段 4：8 个 whl_* 以 @filter.llm_tool 注册（主 agent 可见的前提）
+    assert fake_astrbot["llm_tools"] == list(EXPECTED_LLM_TOOLS)
+    assert fake_astrbot["event_message_type"], "群成员缓存刷新钩子应注册"
 
 
 # ---- 2. metadata.yaml ----
@@ -154,7 +175,7 @@ def test_metadata_yaml_parses_and_name_correct():
     assert metadata["name"] == EXPECTED_NAME
     for field in METADATA_REQUIRED_FIELDS:
         assert isinstance(metadata.get(field), str) and metadata[field].strip(), field
-    assert metadata["version"] == "0.3.0"
+    assert metadata["version"] == "0.4.0"
     assert metadata["support_platforms"] == ["aiocqhttp"]
     assert metadata["astrbot_version"] == ">=4,<5"
     assert metadata["repo"].startswith("https://github.com/")

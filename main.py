@@ -1,28 +1,30 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.2.0，数据层接入）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.4.0，工具层接入）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
-不启动数据同步、不注册 llm_tool、不发任何网络请求；
-/whl状态（仅 AstrBot 管理员）回报配置与同步状态（最后成功时间、降级、行数）。
+不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
+/whl状态（仅 AstrBot 管理员）回报配置与同步状态。
 
-v0.2.0 数据层（阶段 2）：
-- 配置齐备时启动 season → clubs → standings → fixtures 后台同步（sync/），
-  落本地 SQLite（db/，data/plugin_data/<name>/advisor.db，WAL）；
-- 任一源失败保留旧值并在 meta 表标降级，/whl状态 可见；
-- whl_* 工具注册在后续版本接入（阶段 4）。
+v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后台同步，
+失败保留旧值并在 meta 标降级。
 
-v0.3.0 球员/市场/模型（阶段 3）：
-- 新增 players（活跃名单三态翻页）→ player_attrs（/api/players/meta 每批 90）
-  → scores（工资/可比拟合 + player_scores 预计算）任务链，频率分层热/温/冷；
-- roster（全联盟名字索引）与 market（挂牌/成交/广告板）任务；
-- 拟合系数存 model_params（n/r2/version），估价基线存 player_scores；
-- whl_* 工具注册仍在阶段 4 接入。
+v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
+拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.4.0 工具层（阶段 4，本次）：
+- 8 个 whl_* 工具注册为 AstrBot LLM FunctionTool（@filter.llm_tool，主 agent 可见；
+  注册路径对照 AstrBot tests/fixtures/plugins/fixture_plugin.py 与
+  star_manager.py 的 llm_tool 装配：装饰器在类定义时进全局 FunctionToolManager，
+  插件加载时把 handler 绑到插件实例并按 active 决定是否进工具集）；
+- 空转（未配置）时通过 FunctionToolManager 停用全部 8 个工具（Q15-A 不注册语义）；
+- 配置齐备时构造 ToolContext：群成员缓存 + 译名缓存 + 绑定客户端（平台端点未上线，
+  未启用/未绑定时工具返回 NOT_BOUND 而不是抛异常）+ 每群/每人限流；
+- 群消息触发群成员缓存刷新（每群每 10 分钟一次，失败静默降级，§4.7）。
 
 装载与注册说明：
 - AstrBot 以 __import__("data.plugins.<目录名>.main") 点路径装载本模块且不把插件目录
   加入 sys.path，因此兄弟模块一律用相对导入（from .status import ...）；
-- Star 子类经 __init_subclass__ 自动注册，metadata.yaml 字段优先（不再用已废弃的
-  @register/register_star 装饰器，见 astrbot/core/star/register/star.py 的 DEPRECATED 标注）；
-- 同步模块（含 aiohttp）只在配置齐备时才导入，默认安装零额外导入。
+- Star 子类经 __init_subclass__ 自动注册，metadata.yaml 字段优先；
+- 同步/工具模块（含 aiohttp）只在配置齐备时才导入，默认安装零额外导入。
 """
 
 from astrbot.api import logger
@@ -30,11 +32,16 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star
 
-from .status import PLUGIN_NAME, PLUGIN_VERSION, build_status_reply, build_sync_summary, is_idle
+from .status import PLUGIN_NAME, PLUGIN_VERSION, build_status_reply, is_idle
+
+TOOL_METHOD_NAMES = (
+    "whl_league_brief", "whl_team_brief", "whl_player_lookup", "whl_market_board",
+    "whl_player_value", "whl_compare_players", "whl_match_lookup", "whl_rules_lookup",
+)
 
 
 class WhleagueAdvisorPlugin(Star):
-    """WHL 联赛顾问插件。指令：/whl状态（仅管理员）查看配置与同步状态。"""
+    """WHL 联赛顾问插件。指令：/whl状态（仅管理员）；8 个 whl_* 工具（配置齐备时）。"""
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context, config)
@@ -44,10 +51,15 @@ class WhleagueAdvisorPlugin(Star):
         """本地 SQLite 连接（配置齐备时创建；空转时为 None）。"""
         self._scheduler = None
         """后台同步调度器（配置齐备时创建；空转时为 None）。"""
+        self._tool_ctx = None
+        """工具层上下文（配置齐备时创建；空转时为 None，工具已停用）。"""
+
+    # ---- 生命周期 ----
 
     async def initialize(self) -> None:
         if is_idle(self.config.get("enabled_groups"), self.config.get("club_base_url")):
-            logger.info("%s v%s 已加载：未配置，保持空转", PLUGIN_NAME, PLUGIN_VERSION)
+            logger.info("%s v%s 已加载：未配置，保持空转（停用全部 whl_* 工具）", PLUGIN_NAME, PLUGIN_VERSION)
+            await self._set_tools_active(False)
             return
         try:
             await self._start_data_layer()
@@ -57,17 +69,25 @@ class WhleagueAdvisorPlugin(Star):
                 PLUGIN_NAME,
                 PLUGIN_VERSION,
             )
+            await self._set_tools_active(False)
+            return
+        await self._set_tools_active(True)
 
     async def _start_data_layer(self) -> None:
-        """建库、跑迁移、装配源客户端、启动后台同步。失败由 initialize 兜底。"""
+        """建库、跑迁移、装配源客户端与工具上下文、启动后台同步。失败由 initialize 兜底。"""
         # 惰性导入：空转安装（含全部单测的假 astrbot 环境）永远不碰 aiohttp。
         from astrbot.api.star import StarTools
 
         from .db import dao, migrations
+        from .guard.ratelimit import SlidingRateLimiter
+        from .identity.client import BindingsClient
+        from .identity.group_members import GroupMembersStore
+        from .identity.translations import TranslationCache
         from .sources.club import ClubSource
         from .sources.tour import TourSource
         from .sync.jobs import JOBS, SyncContext
         from .sync.scheduler import SyncScheduler
+        from .tools.context import ToolContext
 
         data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self._conn = dao.connect(data_dir / "advisor.db")
@@ -106,6 +126,31 @@ class WhleagueAdvisorPlugin(Star):
         )
         await self._scheduler.start()
 
+        groups_raw = self.config.get("enabled_groups")
+        allowed = {str(g) for g in _as_group_list(groups_raw)}
+        bindings = BindingsClient(
+            str(self.config.get("bindings_base_url") or "").strip(),
+            str(self.config.get("bot_identity_secret") or "").strip(),
+        )
+        if not bindings.enabled:
+            logger.info(
+                "%s：bot_identity_secret/bindings_base_url 未配置，绑定服务未启用"
+                "（「我们队」类问题将返回 NOT_BOUND 反问，按设计 §4.7）",
+                PLUGIN_NAME,
+            )
+        self._tool_ctx = ToolContext(
+            conn=self._conn,
+            config=self.config,
+            members=GroupMembersStore(self._conn),
+            translations=TranslationCache(self._conn),
+            bindings=bindings,
+            limiter=SlidingRateLimiter(
+                group_limit=int(self._positive_number("rate_group_limit", 30)),
+                user_limit=int(self._positive_number("rate_user_limit", 10)),
+            ),
+            allowed_groups=allowed or None,
+        )
+
     def _positive_number(self, key: str, default: float) -> float:
         try:
             value = float(self.config.get(key) or default)
@@ -120,6 +165,178 @@ class WhleagueAdvisorPlugin(Star):
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+        self._tool_ctx = None
+
+    # ---- 工具注册/停用（Q15-A：未配置不注册）----
+
+    async def _set_tools_active(self, active: bool) -> None:
+        """批量启/停 8 个工具；假环境/旧版本无此 API 时静默跳过。
+
+        用 Context 的包装方法（context.py:375/404，内部转 FunctionToolManager 并
+        维护 inactivated_llm_tools 持久化），不用裸 manager 以免状态不一致。
+        """
+        for name in TOOL_METHOD_NAMES:
+            try:
+                if active:
+                    await self.context.activate_llm_tool_async(name)
+                else:
+                    await self.context.deactivate_llm_tool_async(name)
+            except AttributeError:
+                return  # 组件级测试假环境 / 旧版 AstrBot：无此 API
+            except Exception:  # noqa: BLE001 - 单个工具启停失败不拖垮插件
+                logger.warning("切换工具 %s → active=%s 失败", name, active)
+
+    # ---- 群成员缓存刷新（§4.7：每群每 10 分钟）----
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def touch_group_members(self, event: AstrMessageEvent):
+        """群消息顺带刷新群成员缓存（到期才拉，失败静默；工具层降级为名片识别）。"""
+        ctx = self._tool_ctx
+        if ctx is None or not ctx.group_allowed(_safe_group_id(event)):
+            return
+        try:
+            from .identity.group_members import refresh_if_due
+
+            await refresh_if_due(event, ctx.members)
+        except Exception:  # noqa: BLE001 - 成员缓存是尽力而为
+            logger.debug("群成员缓存刷新失败（群 %s）", _safe_group_id(event))
+
+    # ---- 8 个 whl_* 工具（AstrBot LLM FunctionTool）----
+
+    def _tool_ctx_or_none(self):
+        return self._tool_ctx
+
+    @filter.llm_tool("whl_league_brief")
+    async def whl_league_brief(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查 WHL 联赛概览：当前赛季、转会窗状态、各联赛积分榜、近期赛果与下一轮赛程。
+
+        问「赛季/积分榜/排名/转会窗什么时候开」先用本工具；要看具体某队的详情改用
+        whl_team_brief。注意：这是 WHL 虚拟联赛（FC 数据），不是现实足球。
+
+        Args:
+            scope(string): 可选。top 或 second，分别指顶级联赛、次级联赛。
+            tournament(string): 可选。赛事名，如「S9 | 顶级联赛」；不填给全部联赛摘要。
+            limit(number): 可选。积分榜返回行数，默认 10。
+        """
+        return await self._call_tool("whl_league_brief", event, kwargs)
+
+    @filter.llm_tool("whl_team_brief")
+    async def whl_team_brief(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查 WHL 联赛某球队的排名、阵容规模、薪资总额、近期战绩与下一场。
+
+        team 和 person 都不填时按「发送者绑定的队」解析（「我们队」）；person 填群成员
+        名字时按「他执教的队」解析，回答里要说明。问「某某是谁/执教哪队」用
+        view=person。查不到绑定会返回 NOT_BOUND，此时应反问用户执教哪支队。
+
+        Args:
+            team(string): 可选。队名，如「曼联」；库里存中文队名。
+            person(string): 可选。群成员名字（名片/昵称），按其执教的队解析。
+            view(string): 可选。team=球队数据（默认）；person=个人卡（他是谁/执教哪队）。
+            scope(string): 可选。team/person 都缺时用 me（按发送者绑定）。
+        """
+        return await self._call_tool("whl_team_brief", event, kwargs)
+
+    @filter.llm_tool("whl_player_lookup")
+    async def whl_player_lookup(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查 WHL 联赛球员画像：所属球队、位置年龄、档位、合同（违约金/工资/状态）。
+
+        只吃本联赛 FC 数据，不是现实足球。库里只有拉丁名：用户说了中文名时，先在
+        当轮把中文译成拉丁名（如 萨拉赫→Mohamed Salah）再传 name。若返回 NOT_A_PLAYER
+        说明这个名字是群成员不是球员；返回 NOT_FOUND 时按 hint 译名后重试一次。
+
+        Args:
+            name(string): 球员拉丁名，如 Mohamed Salah、Bukayo Saka。
+            detail(boolean): 可选。true 时附完整属性百分位表（默认只给 3 强 3 弱）。
+        """
+        return await self._call_tool("whl_player_lookup", event, kwargs)
+
+    @filter.llm_tool("whl_market_board")
+    async def whl_market_board(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查 WHL 联赛转会市场：当前挂牌（要价/竞价/截止）、转会名单、最近成交。
+
+        可按位置（position，如 ST/CB）或球队（club）过滤。数据来自公开挂牌与成交记录。
+
+        Args:
+            position(string): 可选。平台位置名过滤：GK/CB/RB/LB/CDM/CM/CAM/RM/LM/RW/LW/ST。
+            club(string): 可选。卖方队名过滤。
+            limit(number): 可选。各列表条数上限，默认 15。
+        """
+        return await self._call_tool("whl_market_board", event, kwargs)
+
+    @filter.llm_tool("whl_player_value")
+    async def whl_player_value(self, event: AstrMessageEvent, **kwargs) -> str:
+        """估 WHL 联赛球员身价：强度档位 + 市场参考区间 + RC 约束下的可成交区间。
+
+        返回的 summary 必须转述给用户（含市场参考、RC、可成交区间、RC 状态、置信度），
+        任何情况下不能说「官方身价」。assumptions 传假设场景（如 CA 涨到 92、预算
+        30m）时会按假设重算并标 scenario=true，此时必须向用户说明是假设值。
+
+        Args:
+            name(string): 球员拉丁名（中文先现译）。
+            detail(boolean): 可选。true 时附完整属性百分位。
+            assumptions(object): 可选。{ca_delta,age,pa,budget,role}，只支持这五个键。
+        """
+        return await self._call_tool("whl_player_value", event, kwargs)
+
+    @filter.llm_tool("whl_compare_players")
+    async def whl_compare_players(self, event: AstrMessageEvent, **kwargs) -> str:
+        """对比 WHL 联赛两名球员：档位、位置内百分位、市场参考价、可成交价、合同。
+
+        跨位置只比位置内百分位。两边都必须是本联赛球员；一边不是球员会返回
+        NOT_A_PLAYER。用户问「现实里谁更强」时不要用本工具（那是现实足球问题）。
+
+        Args:
+            a(string): 球员 A 拉丁名。
+            b(string): 球员 B 拉丁名。
+            assumptions(object): 可选。两人同一假设场景 {ca_delta,age,pa,budget,role}。
+        """
+        return await self._call_tool("whl_compare_players", event, kwargs)
+
+    @filter.llm_tool("whl_match_lookup")
+    async def whl_match_lookup(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查 WHL 联赛某队下一场或最近一场比赛（含交锋对手过滤）。
+
+        team/person 都不填时按「发送者绑定的队」解析；person 填群成员名时按其执教的
+        队解析。查不到绑定返回 NOT_BOUND，要反问而不是猜队名。
+
+        Args:
+            team(string): 可选。队名。
+            person(string): 可选。群成员名，按其执教的队解析。
+            when(string): 可选。next=下一场（默认）；prev=最近一场。
+            opponent(string): 可选。对手队名，用于交锋查询。
+            scope(string): 可选。team/person 都缺时用 me（按发送者绑定）。
+        """
+        return await self._call_tool("whl_match_lookup", event, kwargs)
+
+    @filter.llm_tool("whl_rules_lookup")
+    async def whl_rules_lookup(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查 WHL 联赛规则：转会窗、挂牌价边界、出价与截止、激活、保护期、解约费、
+        违约金改价区间、训练营学员、能力档位、涨薪要求、工资口径、身价口径、交易税、
+        PlayStyle、消费券。
+
+        回答时逐字引用返回的规则原文（数字不要改写）；规则库没有的主题要明确说没有。
+
+        Args:
+            question(string): 规则问题，如「转会窗什么时候关」「激活要多少钱」。
+        """
+        return await self._call_tool("whl_rules_lookup", event, kwargs)
+
+    async def _call_tool(self, name: str, event: AstrMessageEvent, args: dict) -> str:
+        ctx = self._tool_ctx
+        if ctx is None:
+            # 双保险：正常情况下空转时工具已停用，到不了这里。
+            from .guard.errors import dump_envelope, error_envelope
+
+            return dump_envelope(error_envelope(
+                "NOT_BOUND", "插件未配置（未启用群/未配数据源），联赛问答不可用",
+                hint="请管理员在 WebUI 配置 enabled_groups 与 club_base_url",
+            ))
+        from .facade import call_tool
+        from .context import CallContext
+
+        return await call_tool(ctx, name, args, CallContext.from_event(event))
+
+    # ---- 指令 ----
 
     @filter.command("whl状态")
     @filter.permission_type(PermissionType.ADMIN)
@@ -143,3 +360,22 @@ class WhleagueAdvisorPlugin(Star):
         elif not is_idle(self.config.get("enabled_groups"), self.config.get("club_base_url")):
             reply += "\n（数据层尚未启动，详见 AstrBot 日志）"
         yield event.plain_result(reply)
+
+
+def _as_group_list(raw) -> list:
+    """enabled_groups 容错：字符串按分隔符拆（与 status.is_idle 同口径）。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        import re
+
+        return [item for item in re.split(r"[,，\s]+", raw.strip()) if item]
+    return list(raw)
+
+
+def _safe_group_id(event) -> str | None:
+    try:
+        gid = event.get_group_id()
+    except Exception:  # noqa: BLE001
+        return None
+    return str(gid) if gid else None

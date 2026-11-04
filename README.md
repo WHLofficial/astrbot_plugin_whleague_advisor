@@ -2,7 +2,7 @@
 
 WHL 联赛只读问答顾问插件（AstrBot v4）：群里有人问联赛积分、球队、球员、转会市场或身价参考时，主模型调用本插件注册的 `whl_*` 工具作答，回答中的每个数字都能对回工具结果。
 
-> 当前为 v0.3.0：插件壳、`/whl状态` 状态指令 + 数据层（本地 SQLite，九个同步任务：赛季/俱乐部/球员/属性/市场/估价模型/名册/积分榜/赛程，失败降级保留旧值）。`whl_*` 问答工具在后续版本接入。
+> 当前为 v0.4.0：插件壳、`/whl状态` 状态指令 + 数据层（本地 SQLite，九个同步任务：赛季/俱乐部/球员/属性/市场/估价模型/名册/积分榜/赛程，失败降级保留旧值）+ 8 个 `whl_*` 问答工具（LLM FunctionTool）、`advice/` 估价纯函数、群成员缓存与绑定客户端、限流与入参守卫、统一错误码。
 
 ## 默认空转（重要）
 
@@ -38,6 +38,10 @@ astrbot plugin install https://github.com/WHLofficial/astrbot_plugin_whleague_ad
 | `sync_hot_minutes` | int | `5` | 热层间隔：赛季 / 积分榜 / 赛程 / 挂牌与成交 / 广告板 |
 | `sync_warm_minutes` | int | `15` | 温层间隔：俱乐部 / 活跃球员名单 |
 | `sync_cold_minutes` | int | `60` | 冷层间隔：名册索引 / 属性预取 / 估价模型重拟合 |
+| `bot_identity_secret` | string | `""` | 与平台 `BOT_IDENTITY_SECRET` 同值；留空 = 绑定服务未启用，「我们队」类问题按群名片弱信号兜底，兜不住返回 `NOT_BOUND` 反问 |
+| `bindings_base_url` | string | `""` | 平台只读绑定端点 `POST /api/internal/bot/bindings` 的站点基础地址；留空 = 未启用 |
+| `rate_group_limit` | int | `30` | 每群查询上限（次/10 分钟），超出返回 `RATE_LIMITED` |
+| `rate_user_limit` | int | `10` | 每人查询上限（次/10 分钟），超出返回 `RATE_LIMITED` |
 
 ## 需自备数据源
 
@@ -45,7 +49,22 @@ astrbot plugin install https://github.com/WHLofficial/astrbot_plugin_whleague_ad
 
 配置齐备后，后台按分层频率同步（热 5 分钟：赛季/积分榜/赛程/挂牌/成交/广告板；温 15 分钟：俱乐部/球员名单；冷 60 分钟：全联盟名册索引/球员属性预取/估价模型重拟合；均可配置）。任一数据源失败时保留旧数据并在 `/whl状态` 中标记「已降级」，不会写入半新半旧的表。同步只调用公开只读 GET 接口；俱乐部详情等需鉴权端点在客户端层直接禁止。
 
-估价模型（`services/`）在每次冷层同步后重拟合：工资回归与可比价格曲线（只认挂牌/广告板/强制拍卖等公开价格点，GK 不单独拟合）存 `model_params`（带 `n` / `r2` / `version`），逐球员的强度画像与参考价区间物化到 `player_scores` 基线。`marketValue` 生产侧全空，模型不使用该列。`whl_player_value` 等工具在阶段 4 读取该基线作答。
+估价模型（`services/`）在每次冷层同步后重拟合：工资回归与可比价格曲线（只认挂牌/广告板/强制拍卖等公开价格点，GK 不单独拟合）存 `model_params`（带 `n` / `r2` / `version`），逐球员的强度画像与参考价区间物化到 `player_scores` 基线。`marketValue` 生产侧全空，模型不使用该列。`whl_player_value` 等工具默认读该基线作答；带 `assumptions`（ca_delta/age/pa/budget/role）时用同一纯函数现场重算并标 `scenario=true`。
+
+## 问答工具（8 个，LLM 自动调用）
+
+| 工具 | 一句话 |
+|---|---|
+| `whl_league_brief` | 赛季/转会窗/积分榜/近期赛程一页纸 |
+| `whl_team_brief` | 球队排名、阵容、薪资、近期战绩；`view=person` 查群成员是谁/执教哪队 |
+| `whl_player_lookup` | 球员画像、合同、状态、所属队（只认拉丁名，中文先现译） |
+| `whl_market_board` | 挂牌、要价、竞价、转会名单，可按位置/球队过滤 |
+| `whl_player_value` | 强度档位 + 市场参考区间 + RC 约束下的可成交区间，可带假设场景 |
+| `whl_compare_players` | 两人强度/身价/合同对比（跨位置只比位置内百分位） |
+| `whl_match_lookup` | 某队下一场/上一场/交锋（「我们队」按发送者绑定解析） |
+| `whl_rules_lookup` | 联赛规则速查（插件内 rules.md 检索，确定性返回原文） |
+
+统一错误码：`BAD_ARG` / `NOT_FOUND` / `AMBIGUOUS`（带候选反问）/ `NO_DATA` / `STALE` / `RATE_LIMITED` / `UPSTREAM_ERROR` / `NOT_A_PLAYER`（群成员不是球员）/ `NOT_BOUND`（查不到球队绑定，反问不猜）。限流：每群 30 次/10 分钟、每人 10 次/10 分钟（可配）。
 
 ## 指令
 

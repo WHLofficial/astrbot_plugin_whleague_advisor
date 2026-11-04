@@ -34,5 +34,29 @@
     "hint": "全联盟名册索引 / 球员属性预取（/api/players/meta 每批 90）/ 估价模型重拟合的刷新间隔，默认 60 分钟。",
     "type": "int",
     "default": 60
+  },
+  "bot_identity_secret": {
+    "description": "身份绑定签名密钥",
+    "hint": "与平台 BOT_IDENTITY_SECRET 同值；留空（默认）= 绑定服务未启用，「我们队」类问题返回 NOT_BOUND 反问（按群名片弱信号兜底）。",
+    "type": "string",
+    "default": ""
+  },
+  "bindings_base_url": {
+    "description": "平台绑定端点地址",
+    "hint": "平台只读绑定端点 POST /api/internal/bot/bindings 的站点基础地址（与 club_base_url 同域）；留空 = 绑定服务未启用。",
+    "type": "string",
+    "default": ""
+  },
+  "rate_group_limit": {
+    "description": "每群查询上限（次/10 分钟）",
+    "hint": "滑动窗口限流，默认每群 30 次/10 分钟；超出返回 RATE_LIMITED。",
+    "type": "int",
+    "default": 30
+  },
+  "rate_user_limit": {
+    "description": "每人查询上限（次/10 分钟）",
+    "hint": "滑动窗口限流，默认每人 10 次/10 分钟；超出返回 RATE_LIMITED。",
+    "type": "int",
+    "default": 10
   }
 }

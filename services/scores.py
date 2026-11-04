@@ -336,21 +336,21 @@ def next_model_version(existing_versions: list[str], trained_at: str) -> str:
     return f"{date}.{seq + 1}"
 
 
-def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict], list[dict], str]:
-    """读本地表 → 拟合 → 逐球员估价。返回 (score_rows, model_param_rows, version)。
+def fit_model_context(
+    players: list[dict],
+    attrs_by_fc: dict[int, dict],
+    listings: list[dict],
+    deals: list[dict],
+    board: list[dict],
+    *,
+    version: str,
+    trained_at: str,
+) -> tuple[ModelContext, dict]:
+    """拟合 → ModelContext（含 comp_role_stats）。返回 (model, model_rows)。
 
-    不写库；调用方（sync.jobs._sync_scores）在单事务里落 model_params + player_scores。
+    compute_scores（预计算）与 advice.valuation（假设场景重算）共用这同一条
+    拟合路径，保证「同输入同答案」（设计 §5.7：场景重算用同一纯函数）。
     """
-    players = dao.read_active_players(conn)
-    attrs_rows = dao.read_player_attrs(conn)
-    attrs_by_fc = {r["fc_id"]: r["attrs"] for r in attrs_rows if r.get("attrs")}
-    active_fc_ids = {p["fc_id"] for p in players if p.get("fc_id") is not None}
-    attrs_by_fc = {fc: a for fc, a in attrs_by_fc.items() if fc in active_fc_ids}
-    baseline = compute_baseline(players, attrs_by_fc)
-
-    listings = dao.read_listings(conn, limit=1000)
-    deals = dao.read_deals(conn, limit=200)
-    board = dao.read_transfer_board(conn, limit=1000)
     wage_points, comp_points = extract_points(players, listings, deals, board)
 
     wage_fit = fitting.fit_wage(wage_points)
@@ -371,12 +371,6 @@ def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict
         comp_source, comp_n, comp_r2 = "fit", comp_fit.n, comp_fit.r2
         comp_role_stats = comp_fit.role_stats
 
-    versions = [
-        row["version"]
-        for row in conn.execute("SELECT version FROM model_params").fetchall()
-    ]
-    version = next_model_version(versions, trained_at)
-
     model = ModelContext(
         wage_params={k: wage_params[k] for k in ("a", "b", "c")},
         comp_params={k: comp_params[k] for k in ("a", "b", "fb", "mf", "fw")},
@@ -386,7 +380,6 @@ def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict
         version=version,
         trained_at=trained_at,
     )
-
     model_rows = [
         {
             "key": "wage",
@@ -401,6 +394,34 @@ def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict
             "r2": comp_r2,
         },
     ]
+    return model, model_rows
+
+
+def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict], list[dict], str]:
+    """读本地表 → 拟合 → 逐球员估价。返回 (score_rows, model_param_rows, version)。
+
+    不写库；调用方（sync.jobs._sync_scores）在单事务里落 model_params + player_scores。
+    """
+    players = dao.read_active_players(conn)
+    attrs_rows = dao.read_player_attrs(conn)
+    attrs_by_fc = {r["fc_id"]: r["attrs"] for r in attrs_rows if r.get("attrs")}
+    active_fc_ids = {p["fc_id"] for p in players if p.get("fc_id") is not None}
+    attrs_by_fc = {fc: a for fc, a in attrs_by_fc.items() if fc in active_fc_ids}
+    baseline = compute_baseline(players, attrs_by_fc)
+
+    listings = dao.read_listings(conn, limit=1000)
+    deals = dao.read_deals(conn, limit=200)
+    board = dao.read_transfer_board(conn, limit=1000)
+
+    versions = [
+        row["version"]
+        for row in conn.execute("SELECT version FROM model_params").fetchall()
+    ]
+    version = next_model_version(versions, trained_at)
+
+    model, model_rows = fit_model_context(
+        players, attrs_by_fc, listings, deals, board, version=version, trained_at=trained_at
+    )
 
     score_rows = []
     for player in players:

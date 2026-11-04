@@ -681,6 +681,7 @@ def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 def collect_status_snapshot(conn: sqlite3.Connection) -> dict:
     """whl状态 用的只读快照（设计 §8.1：最后同步时间、行数、stale 标记、最近错误）。"""
+
     last_success = {
         job: get_last_success(conn, job)
         for job in JOBS
@@ -707,3 +708,217 @@ def collect_status_snapshot(conn: sqlite3.Connection) -> dict:
         "last_runs": last_runs,
         "counts": table_counts(conn),
     }
+
+
+# ---- 阶段 4：身份与工具层支撑表 ----
+
+
+def upsert_group_members(
+    conn: sqlite3.Connection, group_id: str, members: list[dict], refreshed_at: str
+) -> int:
+    """upsert 群成员快照（members: [{qq, card, nickname}]）。绑定列不由本函数改动。"""
+    for m in members:
+        conn.execute(
+            "INSERT INTO group_members (group_id, qq, card, nickname, refreshed_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(group_id, qq) DO UPDATE SET card = excluded.card, "
+            "nickname = excluded.nickname, refreshed_at = excluded.refreshed_at, "
+            "updated_at = excluded.updated_at",
+            (str(group_id), str(m["qq"]), m.get("card"), m.get("nickname"), refreshed_at, refreshed_at),
+        )
+    return len(members)
+
+
+def set_group_member_binding(
+    conn: sqlite3.Connection,
+    group_id: str,
+    qq: str,
+    *,
+    bound: bool,
+    club_id: int | None,
+    club_name: str | None,
+    team_name: str | None = None,
+    is_cpu: int | None = None,
+    updated_at: str | None = None,
+) -> None:
+    """合并写入绑定信息（成员行不存在时先建最小行；成员列表拉取不覆盖绑定列）。"""
+    conn.execute(
+        "INSERT INTO group_members (group_id, qq, bound, club_id, club_name, team_name, "
+        "is_cpu, refreshed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(group_id, qq) DO UPDATE SET bound = excluded.bound, "
+        "club_id = excluded.club_id, club_name = excluded.club_name, "
+        "team_name = excluded.team_name, is_cpu = excluded.is_cpu, "
+        "updated_at = excluded.updated_at",
+        (
+            str(group_id), str(qq), 1 if bound else 0, club_id, club_name, team_name,
+            is_cpu, updated_at or utc_now_iso(), updated_at or utc_now_iso(),
+        ),
+    )
+
+
+def get_group_member(conn: sqlite3.Connection, group_id: str, qq: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM group_members WHERE group_id = ? AND qq = ?", (str(group_id), str(qq))
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def find_group_members_by_name(conn: sqlite3.Connection, group_id: str, name: str) -> list[dict]:
+    """按群名片/昵称找成员：精确在前，包含在后；不跨群（设计 §4.7）。"""
+    name = (name or "").strip().lstrip("@").strip()
+    if not name:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM group_members WHERE group_id = ? AND (card = ? OR nickname = ?)",
+        (str(group_id), name, name),
+    ).fetchall()
+    out = [dict(r) for r in rows]
+    if not out:
+        like = "%" + name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = conn.execute(
+            "SELECT * FROM group_members WHERE group_id = ? AND (card LIKE ? ESCAPE '\\' "
+            "OR nickname LIKE ? ESCAPE '\\') ORDER BY qq LIMIT 10",
+            (str(group_id), like, like),
+        ).fetchall()
+        out = [dict(r) for r in rows]
+    return out
+
+
+def find_group_coaches(conn: sqlite3.Connection, group_id: str, club_id: int) -> list[dict]:
+    """反向查询：某队在这个群里谁执教（设计 §4.7，多个就列出来，不猜正教练）。"""
+    rows = conn.execute(
+        "SELECT * FROM group_members WHERE group_id = ? AND bound = 1 AND club_id = ? ORDER BY qq",
+        (str(group_id), club_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def members_last_refreshed(conn: sqlite3.Connection, group_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT MAX(refreshed_at) AS t FROM group_members WHERE group_id = ?", (str(group_id),)
+    ).fetchone()
+    return row["t"] if row else None
+
+
+def get_translation(conn: sqlite3.Connection, query_key: str) -> dict | None:
+    row = conn.execute(
+        "SELECT query_key, latin_name, source, miss_streak, neg_until, updated_at "
+        "FROM name_translations WHERE query_key = ?",
+        (query_key,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_translation(
+    conn: sqlite3.Connection,
+    query_key: str,
+    *,
+    latin_name: str | None,
+    source: str,
+    miss_streak: int = 0,
+    neg_until: str | None = None,
+    updated_at: str | None = None,
+) -> None:
+    """写译名缓存：latin_name 非空 = 正缓存；NULL + neg_until = 负缓存（Q11-Q13）。"""
+    conn.execute(
+        "INSERT INTO name_translations (query_key, latin_name, source, miss_streak, neg_until, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(query_key) DO UPDATE SET latin_name = excluded.latin_name, "
+        "source = excluded.source, miss_streak = excluded.miss_streak, "
+        "neg_until = excluded.neg_until, updated_at = excluded.updated_at",
+        (query_key, latin_name, source, miss_streak, neg_until, updated_at or utc_now_iso()),
+    )
+
+
+def bump_translation_miss(conn: sqlite3.Connection, query_key: str, updated_at: str | None = None) -> int:
+    """正缓存查询 0 命中 → miss_streak + 1；≥3 由调用方失效重译。返回新 streak。"""
+    row = conn.execute(
+        "SELECT miss_streak FROM name_translations WHERE query_key = ?", (query_key,)
+    ).fetchone()
+    if row is None:
+        return 0
+    streak = int(row["miss_streak"] or 0) + 1
+    conn.execute(
+        "UPDATE name_translations SET miss_streak = ?, updated_at = ? WHERE query_key = ?",
+        (streak, updated_at or utc_now_iso(), query_key),
+    )
+    return streak
+
+
+def upsert_team_aliases(
+    conn: sqlite3.Connection, aliases: list[tuple[str, int, str]], updated_at: str
+) -> int:
+    """播种球队别名（alias, club_id, source）；已存在的别名不覆盖（manual 优先）。"""
+    for alias, club_id, source in aliases:
+        conn.execute(
+            "INSERT INTO team_aliases (alias, club_id, source, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(alias) DO NOTHING",
+            (alias, club_id, source, updated_at),
+        )
+    return len(aliases)
+
+
+def read_team_aliases(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute("SELECT alias, club_id FROM team_aliases").fetchall()
+    return {r["alias"]: r["club_id"] for r in rows}
+
+
+def read_club_by_id(conn: sqlite3.Connection, club_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM clubs WHERE id = ?", (club_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def read_clubs(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM clubs ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_standings(conn: sqlite3.Connection, tournament_id: int, *, limit: int = 50) -> list[dict]:
+    """积分榜（rank 升序；只取 stage_order 最小的阶段，即联赛主阶段）。"""
+    rows = conn.execute(
+        "SELECT * FROM standings WHERE tournament_id = ? ORDER BY stage_order IS NULL, "
+        "stage_order, rank IS NULL, rank, team_name LIMIT ?",
+        (tournament_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_standings_for_team(conn: sqlite3.Connection, tournament_id: int, club_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM standings WHERE tournament_id = ? AND club_id = ? "
+        "ORDER BY stage_order IS NULL, stage_order LIMIT 1",
+        (tournament_id, club_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def read_fixtures(
+    conn: sqlite3.Connection,
+    tournament_id: int,
+    *,
+    team: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """赛程/赛果，按游戏内开赛序升序；team 过滤主客队名。"""
+    clauses = ["tournament_id = ?"]
+    args: list = [tournament_id]
+    if status is not None:
+        clauses.append("status = ?")
+        args.append(status)
+    if team is not None:
+        clauses.append("(home = ? OR away = ?)")
+        args.extend([team, team])
+    rows = conn.execute(
+        "SELECT * FROM fixtures WHERE " + " AND ".join(clauses)
+        + " ORDER BY kickoff_week IS NULL, kickoff_week, kickoff_day IS NULL, kickoff_day, "
+        "kickoff_time IS NULL, kickoff_time, match_id LIMIT ?",
+        (*args, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_season(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute("SELECT * FROM seasons WHERE id = 1").fetchone()
+    return dict(row) if row else None
+

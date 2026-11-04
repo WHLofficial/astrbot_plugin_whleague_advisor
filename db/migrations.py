@@ -32,12 +32,14 @@ CREATE TABLE IF NOT EXISTS meta (
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 SCHEMA_STAGE3_PATH = Path(__file__).with_name("schema_stage3.sql")
+SCHEMA_STAGE4_PATH = Path(__file__).with_name("schema_stage4.sql")
 
 # (版本号, 迁移名, sql 正文)。版本号必须从 1 开始连续。
 # 每个 SQL 正文是独立文件；累计 schema = 各迁移正文按版本号顺序拼接。
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "0001_core_tables", SCHEMA_PATH.read_text(encoding="utf-8")),
     (2, "0002_players_market_model", SCHEMA_STAGE3_PATH.read_text(encoding="utf-8")),
+    (3, "0003_identity_tools", SCHEMA_STAGE4_PATH.read_text(encoding="utf-8")),
 )
 
 CURRENT_VERSION = MIGRATIONS[-1][0]
