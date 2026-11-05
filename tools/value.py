@@ -13,15 +13,24 @@ from ..guard.errors import NO_DATA, ToolError, ok_envelope
 from ..services.scores import assemble_value_data
 from .context import CallContext, ToolContext
 from .freshness import ensure_not_hard_stale, stale_report
-from .player import _attrs_of, _baseline
+from .insights import age_signal
+from .player import _WAGE_TEXT, _attrs_of, _baseline
 from .resolve import resolve_player
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
+PRESENTATION = "先给一句价格判断；只挑一个最突出的信号（RC/成交区间/工资/年龄）展开，其余一句带过；不要复述全部区间数字。"
+_RC_TEXT = {
+    "rc_overpriced": "RC 高于市场",
+    "rc_suppressed": "RC 压价",
+    "rc_capped": "RC 封顶",
+    "rc_fair": "RC 不压价",
+}
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     report = stale_report(ctx.conn, ("players", "market", "scores"), ctx.now())
     assumptions = args.get("assumptions") or {}
+    detail = bool(args.get("detail"))
 
     if not assumptions:
         # 基线路径：player_scores 直接读（§5.7 C 混合）
@@ -81,7 +90,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     }
     caveats.append("marketValue 生产为空，未使用")
     caveats.extend(report["caveats"])
-    if args.get("detail"):
+    if detail:
         from ..advice.strength import full_percentiles
 
         attrs = (_attrs_of(ctx.conn, player.get("fc_id")) or {}).get("attrs") or {}
@@ -91,18 +100,80 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         else:
             caveats.append("该位置暂无属性参考分布，完整百分位不可用")
 
-    summary = valuation_advice.build_value_summary(data)
+    if detail:
+        summary = valuation_advice.build_value_summary(data)
+        payload = data
+    else:
+        fair_mid = (data.get("fair") or {}).get("mid")
+        rc_value = (data.get("rc") or {}).get("value")
+        name = data["player"].get("name")
+        summary = f"{name}：市场参考中位 {fair_mid:g}m" if fair_mid is not None else f"{name}：市场参考缺失"
+        if rc_value is not None:
+            summary += f"，RC {rc_value:g}m。"
+        else:
+            summary += "，无违约金。"
+        if data.get("kind") == "trainee":
+            summary = valuation_advice.build_value_summary(data)
+        payload = _compact_data(data)
     if data.get("scenario"):
         summary = "【假设场景】" + summary
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
         summary=summary,
-        data=data,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
         hint="任何情况下不说「官方身价」；区间是市场参考 + RC 约束下的可成交价",
     )
+
+
+def _compact_data(full: dict) -> dict:
+    fair = full.get("fair") or {}
+    rc = full.get("rc") or {}
+    deal = full.get("deal")
+    model = full.get("model") or {}
+    player = full.get("player") or {}
+    if deal and deal.get("flag") == "no_listable_range":
+        value_signal = "无合法区间"
+    elif deal and deal.get("low") is not None and deal.get("high") is not None:
+        fair_mid = fair.get("mid")
+        if fair_mid is not None and deal["high"] < fair_mid:
+            value_signal = "上限低于市场"
+        elif fair_mid is not None and deal["low"] <= fair_mid <= deal["high"]:
+            value_signal = "可成交覆盖市场"
+        else:
+            value_signal = "可成交偏离市场"
+    elif fair.get("low") is not None:
+        value_signal = "只有市场参考"
+    else:
+        value_signal = "数据不足"
+    role_n = model.get("role_n")
+    facts = {
+        "market": {"low": fair.get("low"), "mid": fair.get("mid"), "high": fair.get("high")},
+        "rc": rc.get("value"),
+        "deal": {"low": deal.get("low"), "high": deal.get("high")} if deal else None,
+        "confidence": fair.get("confidence"),
+        "scenario": bool(full.get("scenario")),
+    }
+    if full.get("affordability") is not None:
+        facts["affordability"] = full["affordability"]
+    data = {
+        "player": player,
+        "facts": facts,
+        "signals": {
+            "rc": _RC_TEXT.get(rc.get("flag"), "无违约金" if rc.get("value") is None else "数据不足"),
+            "wage": _WAGE_TEXT.get((full.get("wage") or {}).get("flag"), "数据不足"),
+            "value": value_signal,
+            "age": age_signal(player.get("age")),
+            "role": "样本少" if role_n is not None and role_n < 8 else
+                    "样本足" if role_n is not None else "数据不足",
+        },
+    }
+    if full.get("kind") == "trainee":
+        data["kind"] = "trainee"
+    return data
 
 
 def _merge_player(player: dict, row: dict) -> dict:

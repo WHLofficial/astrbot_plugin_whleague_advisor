@@ -13,6 +13,7 @@ from ..guard.errors import NO_DATA, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 
 SOURCE = "rules_md"
+PRESENTATION = "只引用命中的规则原文；数字逐字保留；不要改写、不要补别的规则。"
 
 RULES_PATH = Path(__file__).with_name("rules.md")
 
@@ -73,11 +74,12 @@ def _score(query: str, section: dict) -> int:
 
 def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     query = args["question"]
+    detail = bool(args.get("detail"))
     sections = _load_sections()
     scored = sorted(
         ((s, _score(query, s)) for s in sections), key=lambda item: -item[1]
     )
-    hits = [s for s, sc in scored if sc > 0][:3]
+    hits = [s for s, sc in scored if sc > 0][:3 if detail else 1]
     if not hits:
         raise ToolError(
             NO_DATA,
@@ -85,18 +87,27 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
             hint="规则库只有 15 条固定主题（转会窗/挂牌/激活/解约/RC/工资/训练营球员等）；"
                  "没有的就说没有，不要编规则",
         )
-    data = {
-        "question": query,
-        "rules": [
-            {"title": s["title"], "text": s["body"], "origin": _origin_of(s["body"])} for s in hits
-        ],
-    }
-    summary = "；".join(s["title"] for s in hits) + "。"
+    rules = [
+        {"title": s["title"], "text": s["body"], "origin": _origin_of(s["body"])} for s in hits
+    ]
+    if detail:
+        data = {"question": query, "rules": rules}
+        summary = "；".join(s["title"] for s in hits) + "。"
+        summary = f"规则速查命中：{summary}详情见 data.rules 原文，回答时逐字引用不要改写数字。"
+    else:
+        first = rules[0]
+        data = {
+            "question": query,
+            "facts": {"title": first["title"], "origin": first["origin"]},
+            "rules": [first],
+        }
+        summary = f"规则速查命中：{first['title']}。原文见 data.rules，回答时逐字引用不要改写数字。"
     return ok_envelope(
         as_of=None,
         source=SOURCE,
-        summary=f"规则速查命中：{summary}详情见 data.rules 原文，回答时逐字引用不要改写数字。",
+        summary=summary,
         data=data,
+        presentation=None if detail else PRESENTATION,
         caveats=["规则原文来自平台仓源码与 GLOSSARY，可能随后续发版更新"],
         hint="只引用命中的小节；用户问规则库里没有的内容时明确说没有这条",
     )

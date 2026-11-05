@@ -138,8 +138,19 @@ def ctx(conn):
 
 
 class TestLeagueBrief:
+    def test_default_compact_judgement_material(self, ctx):
+        env = call(ctx, "whl_league_brief", {"scope": "top"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert data["season"] == 9 and data["window_status"] == "open"
+        assert set(data) == {"season", "window_status", "facts", "signals"}
+        assert data["facts"]["leagues"][0]["leader"] == "曼联"
+        assert data["signals"]["titleRace"] in ("紧", "一般", "无悬念", "数据不足")
+        assert env["presentation"] and "不要列积分榜" in env["presentation"]
+        assert "standings" not in data and "fixtures" not in data
+
     def test_ok_summary_and_standings(self, ctx):
-        env = call(ctx, "whl_league_brief", {"scope": "top", "limit": 4})
+        env = call(ctx, "whl_league_brief", {"scope": "top", "limit": 4, "detail": True})
         assert env["ok"] is True
         assert env["data"]["season"] == 9
         assert env["data"]["window_status"] == "open"
@@ -166,11 +177,27 @@ class TestLeagueBrief:
 
 class TestTeamBrief:
     def test_explicit_team(self, ctx):
-        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        env = call(ctx, "whl_team_brief", {"team": "利物浦", "detail": True})
         assert env["ok"] is True and env["data"]["via"] == "explicit"
         assert env["data"]["club"]["name"] == "利物浦"
         assert env["data"]["standing"]["rank"] == 3
         assert "第 3 名" in env["summary"]
+
+    def test_default_compact_judgement_material(self, ctx):
+        """默认只给判断素材：5 个 signals + 顶层 presentation，不暴露 standing/squad/recent。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert data["club"]["name"] == "利物浦" and data["via"] == "explicit"
+        assert set(data) == {"club", "via", "facts", "signals"}
+        assert data["facts"]["rank"] == 3 and data["facts"]["points"] == 20
+        assert "next" in data["facts"]
+        assert set(data["signals"]) == {"draws", "squad", "form", "attack", "defense"}
+        assert all(isinstance(v, str) and v for v in data["signals"].values())
+        assert "不要列数字清单" in env["presentation"]
+        assert "standing" not in data and "squad" not in data and "recent" not in data
+        assert "第 3 名" not in env["summary"]
+        assert "None" not in json.dumps(env, ensure_ascii=False)
 
     def test_cpu_suffix_stripped(self, ctx):
         env = call(ctx, "whl_team_brief", {"team": "曼城"})
@@ -293,8 +320,19 @@ class TestTeamBrief:
 
 
 class TestPlayerLookup:
-    def test_latin_name_ok(self, ctx):
+    def test_default_compact_judgement_material(self, ctx):
         env = call(ctx, "whl_player_lookup", {"name": "Harry Kane"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data) == {"player", "facts", "signals"}
+        assert data["player"]["name"] == "Harry Kane"
+        assert data["facts"]["level"] == 8 and data["facts"]["releaseFee"] == 50
+        assert set(data["signals"]) == {"age", "strengths", "weaknesses", "wage", "contract"}
+        assert env["presentation"] and "不要列属性清单" in env["presentation"]
+        assert "contract" not in data and "ability" not in data
+
+    def test_latin_name_ok(self, ctx):
+        env = call(ctx, "whl_player_lookup", {"name": "Harry Kane", "detail": True})
         assert env["ok"] is True
         assert env["data"]["player"]["clubName"] == "利物浦"
         assert env["data"]["contract"]["releaseFee"] == 50
@@ -378,8 +416,19 @@ class TestPlayerLookup:
 
 
 class TestMarketBoard:
-    def test_ok_lists(self, ctx):
+    def test_default_compact_judgement_material(self, ctx):
         env = call(ctx, "whl_market_board", {})
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data) == {"facts", "signals"}
+        assert data["facts"]["counts"]["listings"] >= 1
+        assert data["facts"]["listings"] and len(data["facts"]["listings"]) <= 3
+        assert set(data["signals"]) == {"heat", "supply", "price", "auction"}
+        assert env["presentation"] and "不要逐条念挂牌" in env["presentation"]
+        assert "playerId" not in data["facts"]["listings"][0]
+
+    def test_ok_lists(self, ctx):
+        env = call(ctx, "whl_market_board", {"detail": True})
         assert env["ok"] is True
         assert env["data"]["listings"] and env["data"]["recentDeals"]
         l0 = env["data"]["listings"][0]
@@ -396,7 +445,7 @@ class TestMarketBoard:
         assert env["error"]["code"] == "NO_DATA"
 
     def test_limit_capped(self, ctx):
-        env = call(ctx, "whl_market_board", {"limit": 1})
+        env = call(ctx, "whl_market_board", {"limit": 1, "detail": True})
         assert len(env["data"]["listings"]) <= 1
 
 
@@ -404,9 +453,19 @@ class TestMarketBoard:
 
 
 class TestPlayerValue:
+    def test_default_compact_judgement_material(self, ctx):
+        env = call(ctx, "whl_player_value", {"name": "Harry Kane"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data) == {"player", "facts", "signals"}
+        assert data["facts"]["rc"] == 50 and data["facts"]["market"]["mid"] is not None
+        assert set(data["signals"]) == {"rc", "wage", "value", "age", "role"}
+        assert env["presentation"] and "不要复述全部区间数字" in env["presentation"]
+        assert "fair" not in data and "deal" not in data
+
     def test_baseline_shape_and_summary_contract(self, ctx):
         """§5.5 形状锁 + summary 五要素（市场参考/RC/可成交/RC 状态/置信度）。"""
-        env = call(ctx, "whl_player_value", {"name": "Harry Kane"})
+        env = call(ctx, "whl_player_value", {"name": "Harry Kane", "detail": True})
         assert env["ok"] is True
         data = env["data"]
         assert set(data) >= {"ability", "fair", "deal", "rc", "wage", "model", "flags"}
@@ -425,7 +484,7 @@ class TestPlayerValue:
         assert data["fair"]["source"] in ("public_curve", "gk_outfield_0.6", "rc_fallback")
 
     def test_assumption_scenario(self, ctx):
-        env = call(ctx, "whl_player_value", {"name": "Harry Kane", "assumptions": {"budget": 10}})
+        env = call(ctx, "whl_player_value", {"name": "Harry Kane", "assumptions": {"budget": 10}, "detail": True})
         assert env["ok"] is True
         assert env["data"]["scenario"] is True
         assert env["data"]["affordability"]["budget"] == 10
@@ -464,8 +523,18 @@ class TestPlayerValue:
 
 
 class TestComparePlayers:
-    def test_compare_ok_with_diff(self, ctx):
+    def test_default_compact_judgement_material(self, ctx):
         env = call(ctx, "whl_compare_players", {"a": "Harry Kane", "b": "Kevin De Bruyne"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data) == {"players", "facts", "signals", "scenario", "assumptions"}
+        assert len(data["players"]) == 2
+        assert set(data["signals"]) == {"winner", "value", "age", "role", "contract"}
+        assert env["presentation"] and "不要逐项列数字" in env["presentation"]
+        assert "diff" not in data
+
+    def test_compare_ok_with_diff(self, ctx):
+        env = call(ctx, "whl_compare_players", {"a": "Harry Kane", "b": "Kevin De Bruyne", "detail": True})
         assert env["ok"] is True
         assert len(env["data"]["players"]) == 2
         diff = env["data"]["diff"]
@@ -499,8 +568,18 @@ class TestComparePlayers:
 
 
 class TestMatchLookup:
-    def test_next_match_explicit_team(self, ctx):
+    def test_default_compact_judgement_material(self, ctx):
         env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data) == {"club", "via", "when", "facts", "signals"}
+        assert "matches" not in data and "match" in data["facts"]
+        assert set(data["signals"]) == {"result", "venue", "opponent", "form", "schedule"}
+        assert env["presentation"] and "不要列三场" in env["presentation"]
+        assert "另附" not in env["summary"]
+
+    def test_next_match_explicit_team(self, ctx):
+        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next", "detail": True})
         assert env["ok"] is True
         m = env["data"]["matches"][0]
         assert "利物浦" in (m["home"], m["away"])
@@ -509,7 +588,7 @@ class TestMatchLookup:
     def test_pending_kickoff_null_renders_time_undecided(self, ctx):
         """审查修复：生产数据 pending 场次 kickoff_week/day 全 null → 「时间未定」，
         summary 与 data 里不得出现「第None周第None日」。"""
-        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next"})
+        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next", "detail": True})
         assert env["ok"] is True
         m = env["data"]["matches"][0]
         assert m["status"] == "pending" and m["kickoff"] == "时间未定"
@@ -520,7 +599,7 @@ class TestMatchLookup:
         assert league_env["ok"] is True
         assert "第None" not in json.dumps(league_env, ensure_ascii=False)
         # team brief 的 next_match 同款拼接（种子数据里利物浦必有 pending 下一场）
-        team_env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        team_env = call(ctx, "whl_team_brief", {"team": "利物浦", "detail": True})
         nm = team_env["data"]["next_match"]
         assert nm["kickoff"] == "时间未定" and "None" not in team_env["summary"]
 
@@ -537,7 +616,7 @@ class TestMatchLookup:
             assert mod._fixture_brief({"match_id": 1, "home": "A", "away": "B"})["kickoff"] == "时间未定"
 
     def test_prev_match(self, ctx):
-        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "prev"})
+        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "prev", "detail": True})
         assert env["ok"] is True
         assert env["data"]["matches"][0]["status"] == "finished"
 
@@ -559,7 +638,7 @@ class TestMatchLookup:
         assert env["error"]["code"] == "NOT_BOUND"
 
     def test_opponent_filter(self, ctx):
-        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next", "opponent": "曼联"})
+        env = call(ctx, "whl_match_lookup", {"team": "利物浦", "when": "next", "opponent": "曼联", "detail": True})
         assert env["ok"] is True
         m = env["data"]["matches"][0]
         assert {"曼联", "利物浦"} == {m["home"], m["away"]}
@@ -573,8 +652,16 @@ class TestMatchLookup:
 
 
 class TestRulesLookup:
-    def test_window_question(self, ctx):
+    def test_default_compact_judgement_material(self, ctx):
         env = call(ctx, "whl_rules_lookup", {"question": "转会窗什么时候关？"})
+        assert env["ok"] is True
+        assert set(env["data"]) == {"question", "facts", "rules"}
+        assert len(env["data"]["rules"]) == 1
+        assert env["data"]["facts"]["title"]
+        assert env["presentation"] and "逐字保留" in env["presentation"]
+
+    def test_window_question(self, ctx):
+        env = call(ctx, "whl_rules_lookup", {"question": "转会窗什么时候关？", "detail": True})
         assert env["ok"] is True
         titles = [r["title"] for r in env["data"]["rules"]]
         assert any("转会窗" in t for t in titles)
@@ -582,12 +669,12 @@ class TestRulesLookup:
 
     def test_listing_bounds_exact_numbers(self, ctx):
         """规则数字逐字来自 rules.md，不硬编码在工具里。"""
-        env = call(ctx, "whl_rules_lookup", {"question": "挂牌价上下限怎么算"})
+        env = call(ctx, "whl_rules_lookup", {"question": "挂牌价上下限怎么算", "detail": True})
         text = "\n".join(r["text"] for r in env["data"]["rules"])
         assert "1.5×RC" in text and "0.5×违约金" in text
 
     def test_protection_and_activation(self, ctx):
-        env = call(ctx, "whl_rules_lookup", {"question": "激活保护期要多少钱"})
+        env = call(ctx, "whl_rules_lookup", {"question": "激活保护期要多少钱", "detail": True})
         titles = " ".join(r["title"] for r in env["data"]["rules"])
         assert ("激活" in titles) or ("保护期" in titles)
 

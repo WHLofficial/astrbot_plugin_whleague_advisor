@@ -6,9 +6,20 @@ from ..db import dao
 from ..guard.errors import AMBIGUOUS, NO_DATA, NOT_FOUND, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
-from .resolve import _BindingsDegraded, _club_from_binding, _fetch_bindings, resolve_team_arg
+from .insights import band as _band
+from .insights import form_signal as _form_signal
+from .insights import num as _num
+from .insights import quantile as _quantile
+from .insights import rate as _rate
+from .resolve import (
+    _BindingsDegraded,
+    _club_from_binding,
+    _fetch_bindings,
+    resolve_team_arg,
+)
 
 SOURCE = "local_sqlite"
+PRESENTATION = "先给一句判断；挑一个最突出的信号展开，其余一句带过；不要列数字清单。"
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
@@ -35,11 +46,13 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     # 排名：找该 club 所在赛事的主阶段行
     standings_row = None
     tournament_name = None
+    league_rows: list[dict] = []
     for t in dao.read_tournaments(ctx.conn):
         row = dao.read_standings_for_team(ctx.conn, t["id"], club["id"])
         if row is not None:
             standings_row = row
             tournament_name = t.get("name")
+            league_rows = dao.read_standings(ctx.conn, t["id"], limit=100)
             break
     if standings_row is not None:
         data["standing"] = {
@@ -80,26 +93,23 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     report = stale_report(ctx.conn, ("clubs", "players", "standings", "fixtures"), ctx.now())
     caveats.extend(report["caveats"])
 
-    rank_bit = ""
-    if data.get("standing"):
-        st = data["standing"]
-        rank_bit = f"，{st['tournament']} 第 {st['rank']} 名（{st['points']} 分）"
-    squad_bit = ""
-    if data.get("squad"):
-        sq = data["squad"]
-        squad_bit = f"；一线队 {sq['senior']} 人{'，训练营球员 ' + str(sq['trainee']) + ' 人' if sq['trainee'] else ''}，周薪总额 {sq['total_wage_m']:g}m"
-    summary = f"{club['name']}{rank_bit}{squad_bit}。"
-    if data.get("next_match"):
-        nm = data["next_match"]
-        summary += f"下一场对 {nm['away'] if nm['home'] == club['name'] else nm['home']}（{nm['kickoff']}）。"
+    if args.get("detail"):
+        summary = _full_summary(club, data)
+        payload = data
+        presentation = None
+    else:
+        summary = f"已查到{club['name']}的球队概况。"
+        payload = _compact_data(club, data, via, league_rows, ctx.conn)
+        presentation = PRESENTATION
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
         summary=summary,
-        data=data,
+        data=payload,
         caveats=caveats,
         stale=report["stale"],
         hint="问某名球员用 whl_player_lookup；问下一场详情用 whl_match_lookup",
+        presentation=presentation,
     )
 
 
@@ -258,3 +268,87 @@ def _fixture_brief(f: dict) -> dict:
         "kickoff": _kickoff_text(f),
         "status": f.get("status"),
     }
+
+
+def _full_summary(club: dict, data: dict) -> str:
+    rank_bit = ""
+    if data.get("standing"):
+        st = data["standing"]
+        rank_bit = f"，{st['tournament']} 第 {st['rank']} 名（{st['points']} 分）"
+    squad_bit = ""
+    if data.get("squad"):
+        sq = data["squad"]
+        trainee = f"，训练营球员 {sq['trainee']} 人" if sq["trainee"] else ""
+        squad_bit = f"；一线队 {sq['senior']} 人{trainee}，周薪总额 {sq['total_wage_m']:g}m"
+    summary = f"{club['name']}{rank_bit}{squad_bit}。"
+    if data.get("next_match"):
+        nm = data["next_match"]
+        me = _strip_cpu(club.get("name"))
+        opponent = nm["away"] if _strip_cpu(nm["home"]) == me else nm["home"]
+        summary += f"下一场对 {_strip_cpu(opponent) or opponent}（{nm['kickoff']}）。"
+    return summary
+
+
+def _compact_data(club: dict, full: dict, via: str, league_rows: list[dict], conn) -> dict:
+    """默认给判断素材：facts（最多 rank/points/next）+ 5 个 signals。
+
+    原始 standing/squad/recent 只在 detail=true 时返回；模型不再有逐字段可抄的表格。
+    """
+    st = full.get("standing") or {}
+    rows = league_rows or []
+    draw_rate = _rate(st, "drawn", "played")
+    attack_rate = _rate(st, "gf", "played")
+    defense_rate = _rate(st, "ga", "played")
+    draw_values = [_rate(r, "drawn", "played") for r in rows]
+    attack_values = [_rate(r, "gf", "played") for r in rows]
+    defense_values = [_rate(r, "ga", "played") for r in rows]
+
+    squad = full.get("squad") or {}
+    senior = _num(club.get("squad_senior"))
+    if not senior:
+        senior = _num(squad.get("senior"))
+    club_seniors = {
+        _strip_cpu(c.get("name")): _num(c.get("squad_senior"))
+        for c in dao.read_clubs(conn)
+    }
+    senior_values = [club_seniors.get(_strip_cpu(r.get("team_name"))) for r in rows]
+
+    facts: dict = {}
+    if st.get("rank") is not None:
+        facts["rank"] = st["rank"]
+    if st.get("points") is not None:
+        facts["points"] = st["points"]
+    next_text = _next_match_text(full.get("next_match"), club)
+    if next_text:
+        facts["next"] = next_text
+
+    signals = {
+        "draws": _band(draw_rate, _quantile(draw_values, 0.25), _quantile(draw_values, 0.75),
+                       "偏少", "正常", "偏多"),
+        "squad": _band(senior, _quantile(senior_values, 0.25), _quantile(senior_values, 0.75),
+                       "薄", "一般", "厚"),
+        "form": _form_signal(st.get("form")),
+        "attack": _band(attack_rate, _quantile(attack_values, 0.25), _quantile(attack_values, 0.75),
+                        "弱", "一般", "强"),
+        "defense": _band(defense_rate, _quantile(defense_values, 0.25), _quantile(defense_values, 0.75),
+                         "稳", "一般", "漏", lower_is_better=True),
+    }
+    return {
+        "club": {"id": club["id"], "name": club["name"], "tier": club.get("tier")},
+        "via": via,
+        "facts": facts,
+        "signals": signals,
+    }
+
+
+def _next_match_text(nm: dict | None, club: dict) -> str | None:
+    if not nm:
+        return None
+    me = _strip_cpu(club.get("name"))
+    home = _strip_cpu(nm.get("home"))
+    away = _strip_cpu(nm.get("away"))
+    if home == me:
+        return f"主场对{_strip_cpu(nm.get('away')) or nm.get('away')}"
+    if away == me:
+        return f"客场对{_strip_cpu(nm.get('home')) or nm.get('home')}"
+    return f"{home} vs {away}"

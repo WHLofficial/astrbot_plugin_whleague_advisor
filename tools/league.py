@@ -6,9 +6,11 @@ from ..db import dao
 from ..guard.errors import NO_DATA, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
+from .insights import form_signal
 from .resolve import resolve_tournament
 
 SOURCE = "local_sqlite"
+PRESENTATION = "先给一句联赛格局判断；只挑一个最突出的信号（争冠/状态/转会窗）展开，其余一句带过；不要列积分榜。"
 
 
 def _window_text(season: dict) -> str:
@@ -25,6 +27,7 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     season = dao.read_season(ctx.conn)
     if season is None:
         raise ToolError(NO_DATA, "赛季数据尚未同步，请先等数据层就绪")
+    detail = bool(args.get("detail"))
     tournament = resolve_tournament(ctx.conn, args.get("tournament"), args.get("scope"))
 
     tournaments = dao.read_tournaments(ctx.conn)
@@ -34,8 +37,9 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
 
     standings_out = []
     fixtures_out = []
+    read_limit = int(args.get("limit") or 10) if detail else 2
     for t in picked:
-        rows = dao.read_standings(ctx.conn, t["id"], limit=int(args.get("limit") or 10))
+        rows = dao.read_standings(ctx.conn, t["id"], limit=read_limit)
         if rows:
             standings_out.append(
                 {
@@ -52,16 +56,17 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
                     ],
                 }
             )
-        finished = dao.read_fixtures(ctx.conn, t["id"], status="finished", limit=5)
-        pending = dao.read_fixtures(ctx.conn, t["id"], status="pending", limit=5)
-        fixtures_out.append(
-            {
-                "tournamentId": t["id"],
-                "tournamentName": t.get("name"),
-                "recent": [_fixture_brief(f) for f in finished],
-                "next": [_fixture_brief(f) for f in pending],
-            }
-        )
+        if detail:
+            finished = dao.read_fixtures(ctx.conn, t["id"], status="finished", limit=5)
+            pending = dao.read_fixtures(ctx.conn, t["id"], status="pending", limit=5)
+            fixtures_out.append(
+                {
+                    "tournamentId": t["id"],
+                    "tournamentName": t.get("name"),
+                    "recent": [_fixture_brief(f) for f in finished],
+                    "next": [_fixture_brief(f) for f in pending],
+                }
+            )
     if not standings_out and tournament is not None:
         raise ToolError(
             NO_DATA,
@@ -80,11 +85,8 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         f"S{season['season']} 赛季进行中，{_window_text(season)}。"
         + ("；".join(leader_bits) + "。" if leader_bits else "积分榜尚未同步。")
     )
-    return ok_envelope(
-        as_of=report["as_of"],
-        source=SOURCE,
-        summary=summary,
-        data={
+    if detail:
+        payload = {
             "season": season["season"],
             "season_status": season["status"],
             "window_seq": season.get("window_seq"),
@@ -96,11 +98,77 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
             ],
             "standings": standings_out,
             "fixtures": fixtures_out,
-        },
+        }
+    else:
+        payload = _compact_data(season, standings_out)
+    return ok_envelope(
+        as_of=report["as_of"],
+        source=SOURCE,
+        summary=summary,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
         caveats=report["caveats"],
         stale=report["stale"],
         hint="问具体球队用 whl_team_brief / whl_match_lookup",
     )
+
+
+def _compact_data(season: dict, standings_out: list[dict]) -> dict:
+    """默认只给判断素材：各联赛榜首/分差 + 争冠/状态/转会窗信号。"""
+    leagues = []
+    gaps = []
+    forms = []
+    for block in standings_out:
+        rows = block.get("rows") or []
+        if not rows:
+            continue
+        top = rows[0]
+        second = rows[1] if len(rows) > 1 else None
+        entry = {
+            "name": block.get("tournamentName"),
+            "leader": top.get("team"),
+            "points": top.get("points"),
+        }
+        if second is not None:
+            entry["runnerUp"] = second.get("team")
+            if top.get("points") is not None and second.get("points") is not None:
+                entry["gap"] = top["points"] - second["points"]
+                gaps.append(entry["gap"])
+        leagues.append(entry)
+        forms.append(form_signal(top.get("form")))
+
+    if not gaps:
+        title_race = "数据不足"
+    elif min(gaps) <= 3:
+        title_race = "紧"
+    elif min(gaps) <= 6:
+        title_race = "一般"
+    else:
+        title_race = "无悬念"
+    if "好" in forms:
+        leader_form = "好"
+    elif "一般" in forms:
+        leader_form = "一般"
+    elif forms and all(f == "差" for f in forms):
+        leader_form = "差"
+    else:
+        leader_form = "数据不足"
+
+    return {
+        "season": season["season"],
+        "window_status": season.get("window_status"),
+        "facts": {
+            "season": season["season"],
+            "window": {"seq": season.get("window_seq"), "status": season.get("window_status")},
+            "leagues": leagues,
+        },
+        "signals": {
+            "titleRace": title_race,
+            "leaderForm": leader_form,
+            "window": "开启中" if season.get("window_status") == "open" else
+                      "已关闭" if season.get("window_status") == "closed" else "状态未知",
+        },
+    }
 
 
 def _kickoff_text(f: dict) -> str:

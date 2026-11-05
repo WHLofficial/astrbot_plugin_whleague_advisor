@@ -72,6 +72,7 @@ def ok_envelope(
     caveats: list[str] | None = None,
     hint: str | None = None,
     stale: bool | None = None,
+    presentation: str | None = None,
 ) -> dict:
     """成功信封（设计 §6 统一返回；stale=true 时 caveats 必须写「数据停留在 HH:MM」）。"""
     env: dict[str, Any] = {
@@ -85,6 +86,8 @@ def ok_envelope(
     }
     if stale is not None:
         env["stale"] = stale
+    if presentation is not None:
+        env["presentation"] = presentation
     return env
 
 

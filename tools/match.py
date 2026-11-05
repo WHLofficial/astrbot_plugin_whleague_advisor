@@ -12,14 +12,17 @@ from ..db import dao
 from ..guard.errors import BAD_ARG, NO_DATA, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
+from .insights import form_signal
 from .resolve import resolve_club, resolve_team_arg
 
 SOURCE = ["fixtures", "standings"]
+PRESENTATION = "先给一句比赛判断；只挑一个最突出的信号（对手强弱/近期状态/主客场）展开，其余一句带过；不要列三场。"
 
 _WHEN_LABEL = {"next": "下一场", "prev": "最近一场"}
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
+    detail = bool(args.get("detail"))
     when = args.get("when") or "next"
     if when not in _WHEN_LABEL:
         raise ToolError(BAD_ARG, f"when 只接受 next/prev（当前 {when!r}）")
@@ -77,15 +80,82 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         score = first.get("score") or "未完赛"
         summary = f"{club['name']} 最近一场：{first['home']} {score} {first['away']}（{first['kickoff']}）"
     summary += f"，另附 {len(rows) - 1} 场供参考。" if len(rows) > 1 else "。"
+    if detail:
+        payload = data
+    else:
+        summary = f"已查到 {club['name']} 的{_WHEN_LABEL[when]}。"
+        payload = _compact_data(ctx, club, via, when, first, finished, rows)
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
         summary=summary,
-        data=data,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
         hint="「我们队」没绑定时本工具返回 NOT_BOUND 反问，不要猜队名",
     )
+
+
+def _compact_data(ctx: ToolContext, club: dict, via: str, when: str, first: dict,
+                  finished: list[dict], rows: list[dict]) -> dict:
+    club_name = club["name"]
+    opponent = first.get("away") if first.get("home") == club_name else first.get("home")
+    venue = "主场" if first.get("home") == club_name else "客场" if first.get("away") == club_name else "中立"
+    score = first.get("score")
+    if when == "next" or not score:
+        result = "未赛"
+    else:
+        try:
+            hi, ai = (int(x) for x in score.split(":"))
+        except (TypeError, ValueError):
+            result = "数据不足"
+        else:
+            own, other = (hi, ai) if first.get("home") == club_name else (ai, hi)
+            result = "胜" if own > other else "平" if own == other else "负"
+    form_source = _dedupe(finished if when == "next" else rows)[:5]
+    chars = []
+    for f in form_source:
+        s = f.get("score")
+        if not s:
+            continue
+        try:
+            hi, ai = (int(x) for x in s.split(":"))
+        except (TypeError, ValueError):
+            continue
+        own, other = (hi, ai) if f.get("home") == club_name else (ai, hi)
+        chars.append("W" if own > other else "D" if own == other else "L")
+    return {
+        "club": {"id": club["id"], "name": club["name"]},
+        "via": via,
+        "when": when,
+        "facts": {"match": first},
+        "signals": {
+            "result": result,
+            "venue": venue,
+            "opponent": _opponent_signal(ctx.conn, opponent),
+            "form": form_signal(chars),
+            "schedule": "时间未定" if first.get("kickoff") == "时间未定" else "已排期",
+        },
+    }
+
+
+def _opponent_signal(conn, name: str | None) -> str:
+    if not name:
+        return "数据不足"
+    for t in dao.read_tournaments(conn):
+        rows = dao.read_standings(conn, t["id"], limit=100)
+        row = next((r for r in rows if r.get("team") == name), None)
+        if row is None or row.get("rank") is None or not rows:
+            continue
+        n = len(rows)
+        rank = row["rank"]
+        if rank <= max(2, n // 4):
+            return "强"
+        if rank >= max(3, n - n // 4):
+            return "弱"
+        return "中"
+    return "数据不足"
 
 
 def _name_variants(name: str) -> list[str]:

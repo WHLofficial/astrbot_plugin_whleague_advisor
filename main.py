@@ -339,31 +339,36 @@ class WhleagueAdvisorPlugin(Star):
         whl_team_brief。注意：这是 WHL 虚拟联赛（FC 数据），不是现实足球。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+        默认 data 是判断素材（facts/signals），不是完整积分榜；顶层 presentation 给出
+        风格和取舍要求。用户明确要榜单/多条/详细数据时才传 detail=true。
 
         Args:
             scope(string): 可选。top 或 second，分别指顶级联赛、次级联赛。
             tournament(string): 可选。赛事名，如「S9 | 顶级联赛」；不填给全部联赛摘要。
-            limit(number): 可选。积分榜返回行数，默认 10。
+            limit(number): 可选。积分榜返回行数，默认 10（detail=true 时生效）。
+            detail(boolean): 可选。true=完整积分榜/赛程；默认只给 facts/signals。
         """
         return await self._call_tool("whl_league_brief", event, kwargs)
 
     @filter.llm_tool("whl_team_brief")
     async def whl_team_brief(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查 WHL 联赛某球队的排名、阵容规模、薪资总额、近期战绩与下一场。
+        """查 WHL 联赛某球队的概况；默认给判断素材，detail=true 才返回完整数据。
 
         team 和 person 都不填时按「发送者绑定的队」解析（「我们队」）；person 填群成员
         名字时按「他执教的队」解析，回答里要说明。问「某某是谁/执教哪队」用
         view=person。查不到绑定会返回 NOT_BOUND，此时应反问用户执教哪支队。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+        默认 data 是判断素材（facts/signals），不是完整排名、阵容和逐场比分；顶层
+        presentation 给出风格和取舍要求，按它组织回答。用户明确要榜单、多条或逐场明细
+        时，才传 detail=true 取全量。
 
         Args:
             team(string): 可选。队名，如「曼联」；库里存中文队名。
             person(string): 可选。群成员名字（名片/昵称），按其执教的队解析。
             view(string): 可选。team=球队数据（默认）；person=个人卡（他是谁/执教哪队）。
             scope(string): 可选。team/person 都缺时用 me（按发送者绑定）。
+            detail(boolean): 可选。true=完整数据；默认只给 facts/signals。
         """
         return await self._call_tool("whl_team_brief", event, kwargs)
 
@@ -376,11 +381,12 @@ class WhleagueAdvisorPlugin(Star):
         说明这个名字是群成员不是球员；返回 NOT_FOUND 时按 hint 译名后重试一次。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+        默认 data 是判断素材（facts/signals），不是完整合同/属性表；用户明确要完整
+        合同、CA/PA、工资或百分位时才传 detail=true。
 
         Args:
             name(string): 球员拉丁名，如 Mohamed Salah、Bukayo Saka。
-            detail(boolean): 可选。true 时附完整属性百分位表（默认只给 3 强 3 弱）。
+            detail(boolean): 可选。true=合同/CA/PA/工资全量 + 完整百分位；默认只给 facts/signals。
         """
         return await self._call_tool("whl_player_lookup", event, kwargs)
 
@@ -391,12 +397,14 @@ class WhleagueAdvisorPlugin(Star):
         可按位置（position，如 ST/CB）或球队（club）过滤。数据来自公开挂牌与成交记录。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+        默认 data 是判断素材（facts/signals），不是完整挂牌列表；顶层 presentation 给出
+        风格和取舍要求。用户明确要逐条挂牌/名单/成交时才传 detail=true。
 
         Args:
             position(string): 可选。平台位置名过滤：GK/CB/RB/LB/CDM/CM/CAM/RM/LM/RW/LW/ST。
             club(string): 可选。卖方队名过滤。
-            limit(number): 可选。各列表条数上限，默认 15。
+            limit(number): 可选。各列表条数上限，默认 15（detail=true 时生效）。
+            detail(boolean): 可选。true=完整挂牌/名单/成交列表；默认只给 facts/signals。
         """
         return await self._call_tool("whl_market_board", event, kwargs)
 
@@ -404,16 +412,16 @@ class WhleagueAdvisorPlugin(Star):
     async def whl_player_value(self, event: AstrMessageEvent, **kwargs) -> str:
         """估 WHL 联赛球员身价：强度档位 + 市场参考区间 + RC 约束下的可成交区间。
 
-        返回的 summary 必须转述给用户（含市场参考、RC、可成交区间、RC 状态、置信度），
+        默认 data 是判断素材（facts/signals），顶层 presentation 给出风格和取舍要求；
+        用户明确要完整估价明细（市场区间、RC 状态、置信度、百分位）时才传 detail=true。
         任何情况下不能说「官方身价」。assumptions 传假设场景（如 CA 涨到 92、预算
         30m）时会按假设重算并标 scenario=true，此时必须向用户说明是假设值。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
 
         Args:
             name(string): 球员拉丁名（中文先现译）。
-            detail(boolean): 可选。true 时附完整属性百分位。
+            detail(boolean): 可选。true=完整估价明细 + 百分位；默认只给 facts/signals。
             assumptions(object): 可选。{ca_delta,age,pa,budget,role}，只支持这五个键。
         """
         return await self._call_tool("whl_player_value", event, kwargs)
@@ -426,12 +434,14 @@ class WhleagueAdvisorPlugin(Star):
         NOT_A_PLAYER。用户问「现实里谁更强」时不要用本工具（那是现实足球问题）。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+        默认 data 是判断素材（facts/signals），不是两人的完整估价；用户明确要逐项
+        对比明细时才传 detail=true。
 
         Args:
             a(string): 球员 A 拉丁名。
             b(string): 球员 B 拉丁名。
             assumptions(object): 可选。两人同一假设场景 {ca_delta,age,pa,budget,role}。
+            detail(boolean): 可选。true=完整两人的估价与 diff；默认只给 facts/signals。
         """
         return await self._call_tool("whl_compare_players", event, kwargs)
 
@@ -443,7 +453,8 @@ class WhleagueAdvisorPlugin(Star):
         队解析。查不到绑定返回 NOT_BOUND，要反问而不是猜队名。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+        默认 data 是判断素材（facts/signals），只给下一场/最近一场；用户明确要最近
+        三场或逐场明细时才传 detail=true。
 
         Args:
             team(string): 可选。队名。
@@ -451,6 +462,7 @@ class WhleagueAdvisorPlugin(Star):
             when(string): 可选。next=下一场（默认）；prev=最近一场。
             opponent(string): 可选。对手队名，用于交锋查询。
             scope(string): 可选。team/person 都缺时用 me（按发送者绑定）。
+            detail(boolean): 可选。true=最近 3 场；默认只给 facts/signals。
         """
         return await self._call_tool("whl_match_lookup", event, kwargs)
 
@@ -461,10 +473,12 @@ class WhleagueAdvisorPlugin(Star):
         PlayStyle、消费券。
 
         回答时逐字引用返回的规则原文（数字不要改写）；只引用与问题直接相关的规则，不要
-        整节复述；规则库没有的主题要明确说没有。
+        整节复述；规则库没有的主题要明确说没有。默认只给最相关的 1 条命中，用户明确
+        要更多相关规则时才传 detail=true。
 
         Args:
             question(string): 规则问题，如「激活要多少钱」「保护期是多久」。
+            detail(boolean): 可选。true=最多 3 条命中；默认只给最相关的 1 条原文。
         """
         return await self._call_tool("whl_rules_lookup", event, kwargs)
 

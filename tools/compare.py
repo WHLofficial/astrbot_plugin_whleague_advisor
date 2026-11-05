@@ -16,12 +16,14 @@ from .resolve import resolve_player
 from .value import _merge_player
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
+PRESENTATION = "先给一句谁更强/谁更值；只挑一个最突出的对比维度（强度/价格/年龄/合同）展开，其余一句带过；不要逐项列数字。"
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     report = stale_report(ctx.conn, ("players", "market", "scores"), ctx.now())
     ensure_not_hard_stale(report, ("market",), what="对比估价")
     assumptions = args.get("assumptions") or {}
+    detail = bool(args.get("detail"))
 
     a = resolve_player(
         ctx.conn, args["a"], cache=ctx.translations,
@@ -80,15 +82,81 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         "scenario": scenario,
         "assumptions": list(a_row.get("assumptions_desc") or []) if assumptions else [],
     }
+    if detail:
+        summary = compare_advice.compare_summary(name_a, name_b, diff)
+        payload = data
+    else:
+        summary = f"已对比 {name_a} 与 {name_b}。"
+        payload = _compact_data(a, b, a_data, b_data, diff, same_role, scenario, data["assumptions"])
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
-        summary=compare_advice.compare_summary(name_a, name_b, diff),
-        data=data,
+        summary=summary,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
         hint="两边都只吃本联赛 FC 数据（§4.8）；现实足球对比不走本工具",
     )
+
+
+def _compact_data(a, b, a_data, b_data, diff, same_role, scenario, assumptions) -> dict:
+    level = diff.get("level") or {}
+    profile = diff.get("profile_score") or {}
+    fair = diff.get("fair_mid") or {}
+    rc = diff.get("rc") or {}
+    age_a, age_b = a.get("age"), b.get("age")
+    if level.get("delta"):
+        winner = "B" if level["delta"] > 0 else "A"
+    elif profile.get("delta"):
+        winner = "B" if profile["delta"] > 0 else "A"
+    else:
+        winner = "接近"
+    if fair.get("a") is None or fair.get("b") is None:
+        value = "数据不足"
+    elif fair["a"] < fair["b"]:
+        value = "A 更便宜"
+    elif fair["b"] < fair["a"]:
+        value = "B 更便宜"
+    else:
+        value = "价格接近"
+    if age_a is None or age_b is None:
+        age = "数据不足"
+    elif age_a < age_b:
+        age = "A 更年轻"
+    elif age_b < age_a:
+        age = "B 更年轻"
+    else:
+        age = "同龄"
+    if rc.get("a") is None and rc.get("b") is None:
+        contract = "都无 RC"
+    elif rc.get("a") is None:
+        contract = "B 有 RC，A 无"
+    elif rc.get("b") is None:
+        contract = "A 有 RC，B 无"
+    elif rc["a"] < rc["b"]:
+        contract = "A RC 更低"
+    elif rc["b"] < rc["a"]:
+        contract = "B RC 更低"
+    else:
+        contract = "RC 相同"
+    return {
+        "players": [_player_brief(a), _player_brief(b)],
+        "facts": {
+            "level": {"a": level.get("a"), "b": level.get("b")},
+            "profileScore": {"a": profile.get("a"), "b": profile.get("b")},
+            "fairMid": {"a": fair.get("a"), "b": fair.get("b")},
+        },
+        "signals": {
+            "winner": winner,
+            "value": value,
+            "age": age,
+            "role": "同位置组" if same_role else "跨位置组",
+            "contract": contract,
+        },
+        "scenario": scenario,
+        "assumptions": assumptions,
+    }
 
 
 def _evaluate(player, attrs_by_fc, baseline, model, assumptions):

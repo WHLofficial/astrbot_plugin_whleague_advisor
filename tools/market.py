@@ -6,13 +6,16 @@ from ..db import dao
 from ..guard.errors import BAD_ARG, NO_DATA, ToolError, ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
+from .insights import median
 from .resolve import resolve_club, role_group_of
 
 SOURCE = ["listings", "deals", "transfer_board"]
+PRESENTATION = "先给一句市场冷热判断；只挑一个最突出的信号（供给/价格/竞价）展开，其余一句带过；不要逐条念挂牌。"
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     limit = int(args.get("limit") or 15)
+    detail = bool(args.get("detail"))
     position = args.get("position")
     role = role_group_of(position) if position else None
     if position and role is None:
@@ -34,10 +37,11 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     for row in listings:
         row.setdefault("player_name", name_by_id.get(row.get("player_id")))
 
+    display_limit = limit if detail else 3
     data = {
-        "listings": [_listing_brief(l) for l in listings[:limit]],
-        "transferBoard": [_board_brief(b) for b in board[:limit]],
-        "recentDeals": [_deal_brief(d) for d in deals[:limit]],
+        "listings": [_listing_brief(l) for l in listings[:display_limit]],
+        "transferBoard": [_board_brief(b) for b in board[:display_limit]],
+        "recentDeals": [_deal_brief(d) for d in deals[:display_limit]],
     }
     if not data["listings"] and not data["transferBoard"] and not data["recentDeals"]:
         filters = [args[k] for k in ("position", "club") if args.get(k)]
@@ -48,18 +52,94 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         )
 
     report = stale_report(ctx.conn, ("market",), ctx.now())
-    counts = f"挂牌 {len(data['listings'])} 条、转会名单 {len(data['transferBoard'])} 人、近期成交 {len(data['recentDeals'])} 笔"
+    counts = f"挂牌 {len(listings)} 条、转会名单 {len(board)} 人、近期成交 {len(deals)} 笔"
     if args.get("club"):
         counts = f"{club['name']}：{counts}"
+    if detail:
+        payload = data
+    else:
+        payload = _compact_data(data, listings, board, deals)
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
         summary=f"{counts}。",
-        data=data,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
         caveats=report["caveats"],
         stale=report["stale"],
         hint="问某人身价参考用 whl_player_value",
     )
+
+
+def _compact_data(data: dict, listings: list[dict], board: list[dict], deals: list[dict]) -> dict:
+    counts = {
+        "listings": len(listings),
+        "transferBoard": len(board),
+        "recentDeals": len(deals),
+    }
+    total = sum(counts.values())
+    heat = "活跃" if total >= 8 else "一般" if total >= 2 else "冷清" if total else "数据不足"
+    if counts["listings"] and counts["transferBoard"]:
+        supply = "挂牌多名单少" if counts["listings"] > counts["transferBoard"] else \
+                 "名单供给充足" if counts["transferBoard"] > counts["listings"] else "供需平衡"
+    elif counts["listings"]:
+        supply = "挂牌多名单少"
+    elif counts["transferBoard"]:
+        supply = "名单供给充足"
+    else:
+        supply = "数据不足"
+    asks = [l.get("ask_price") for l in listings if l.get("ask_price") is not None]
+    fees = [d.get("fee") for d in deals if d.get("fee") is not None]
+    ask_mid, fee_mid = median(asks), median(fees)
+    if ask_mid is None or fee_mid is None:
+        price = "数据不足"
+    elif ask_mid >= fee_mid * 1.15:
+        price = "要价偏高"
+    elif ask_mid <= fee_mid * 0.85:
+        price = "要价偏低"
+    else:
+        price = "接近成交价"
+    auction = "已有竞价" if any((l.get("bid_count") or 0) > 0 or l.get("highest_bid") is not None
+                               for l in listings) else "无竞价"
+    return {
+        "facts": {
+            "counts": counts,
+            "listings": [_slim_listing(l) for l in data["listings"]],
+            "transferBoard": [_slim_board(b) for b in data["transferBoard"]],
+            "recentDeals": [_slim_deal(d) for d in data["recentDeals"]],
+        },
+        "signals": {"heat": heat, "supply": supply, "price": price, "auction": auction},
+    }
+
+
+def _slim_listing(l: dict) -> dict:
+    return {
+        "playerName": l.get("playerName"),
+        "seller": l.get("seller"),
+        "askPriceM": l.get("askPriceM"),
+        "highestBidM": l.get("highestBidM"),
+        "bidCount": l.get("bidCount"),
+    }
+
+
+def _slim_board(b: dict) -> dict:
+    return {
+        "name": b.get("name"),
+        "clubName": b.get("clubName"),
+        "positions": b.get("positions"),
+        "listPriceM": b.get("listPriceM"),
+        "releaseFeeM": b.get("releaseFeeM"),
+    }
+
+
+def _slim_deal(d: dict) -> dict:
+    return {
+        "type": d.get("type"),
+        "playerName": d.get("playerName"),
+        "from": d.get("from"),
+        "to": d.get("to"),
+        "feeM": d.get("feeM"),
+    }
 
 
 def _filter_listings(rows: list[dict], club: dict | None) -> list[dict]:

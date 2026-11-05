@@ -10,9 +10,12 @@ from ..db import dao
 from ..guard.errors import ok_envelope
 from .context import CallContext, ToolContext
 from .freshness import stale_report
+from .insights import age_signal
 from .resolve import resolve_player
 
 SOURCE = ["players", "player_scores", "player_attrs"]
+PRESENTATION = "先给一句球员定位；只挑一个最突出的信号（强项/短板/合同/工资）展开，其余一句带过；不要列属性清单。"
+_WAGE_TEXT = {"underpaid": "低于市场", "overpaid": "高于市场", "market_wage": "市场水平"}
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
@@ -83,22 +86,72 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     name = data["player"]["name"]
     club_name = data["player"].get("clubName") or "无俱乐部"
     ability = data.get("ability") or {}
-    summary = f"{name}：{club_name}，{data['player'].get('position') or '位置未知'}，{data['player'].get('age') or '?'} 岁"
-    if ability.get("level") is not None:
-        summary += f"，档位 {ability['level']:g}（CA {ability.get('ca')}/PA {ability.get('pa')}）"
-    contract = data["contract"]
-    rc_bit = f"，RC {contract['releaseFee']:g}m" if contract.get("releaseFee") else "，无违约金（自由身）"
-    wage_bit = f"，工资 {contract['wage']:g}m" if contract.get("wage") else ""
-    summary += f"{rc_bit}{wage_bit}。"
+    if detail:
+        summary = f"{name}：{club_name}，{data['player'].get('position') or '位置未知'}，{data['player'].get('age') or '?'} 岁"
+        if ability.get("level") is not None:
+            summary += f"，档位 {ability['level']:g}（CA {ability.get('ca')}/PA {ability.get('pa')}）"
+        contract = data["contract"]
+        rc_bit = f"，RC {contract['releaseFee']:g}m" if contract.get("releaseFee") else "，无违约金（自由身）"
+        wage_bit = f"，工资 {contract['wage']:g}m" if contract.get("wage") else ""
+        summary += f"{rc_bit}{wage_bit}。"
+        payload = data
+    else:
+        summary = f"{name}：{club_name}，{data['player'].get('position') or '位置未知'}，{data['player'].get('age') or '?'} 岁"
+        if ability.get("level") is not None:
+            summary += f"，档位 {ability['level']:g}"
+        rc = data["contract"].get("releaseFee")
+        summary += f"，RC {rc:g}m。" if rc else "，无违约金（自由身）。"
+        payload = _compact_data(data)
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
         summary=summary,
-        data=data,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
         hint="问身价/可成交价用 whl_player_value；对比两人用 whl_compare_players",
     )
+
+
+def _compact_data(full: dict) -> dict:
+    """默认只给判断素材：定位/合同要点 + 年龄、强项、短板、工资、合同状态。"""
+    player = full["player"]
+    contract = full["contract"]
+    ability = full.get("ability") or {}
+    wage_flag = (full.get("wage_signal") or {}).get("flag")
+    if contract.get("transferListed"):
+        contract_signal = "挂牌中"
+    elif contract.get("notForSale"):
+        contract_signal = "非卖品"
+    elif contract.get("protected"):
+        contract_signal = "保护期"
+    elif not contract.get("releaseFee"):
+        contract_signal = "自由身"
+    else:
+        contract_signal = "正常合同"
+    return {
+        "player": {
+            "id": player.get("id"),
+            "name": player.get("name"),
+            "clubId": player.get("clubId"),
+            "clubName": player.get("clubName"),
+            "position": player.get("position"),
+            "age": player.get("age"),
+        },
+        "facts": {
+            "level": ability.get("level"),
+            "releaseFee": contract.get("releaseFee"),
+            "wage": contract.get("wage"),
+        },
+        "signals": {
+            "age": age_signal(player.get("age")),
+            "strengths": list(ability.get("strengths") or [])[:3],
+            "weaknesses": list(ability.get("weaknesses") or [])[:3],
+            "wage": _WAGE_TEXT.get(wage_flag, "数据不足"),
+            "contract": contract_signal,
+        },
+    }
 
 
 def _attrs_of(conn, fc_id: int | None) -> dict | None:
