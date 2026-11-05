@@ -7,7 +7,7 @@
 import re
 
 PLUGIN_NAME = "astrbot_plugin_whleague_advisor"
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.7.0"
 
 # 默认配置（两空）下 /whl_status 的唯一回复：一句「未配置」，零网络请求。
 MSG_UNCONFIGURED = (

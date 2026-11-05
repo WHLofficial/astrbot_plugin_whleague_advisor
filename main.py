@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.6.0）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.7.0）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -10,7 +10,11 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
 
-v0.6.0 术语与转会匹配（本次）：
+v0.7.0 身份预注入与口语化：
+- LLM 请求前注入发送者绑定球队，未知时要求先查 scope=me 或反问；
+- 估价/匹配默认口语化，匹配统一叫「匹配机会」，能力等级默认不主动报。
+
+v0.6.0 术语与转会匹配：
 - 默认输出改为 facts + signals + presentation，detail=true 才返回全量；
 - 新增 whl_transfer_match，whl_market_board 增加匹配机会；工具数 8→9；
 - 用户-facing 术语统一（估价/市场参考价、违约金 RC、转会广告板等），
