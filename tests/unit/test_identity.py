@@ -261,17 +261,25 @@ class TestBindingsClient:
             asyncio.run(client.fetch("g", ["1"]))
 
     def test_strict_response_shape(self):
-        """Q12-B 严格校验：ok!=true / 缺 bindings / 缺字段 / bound 无俱乐部信息都拒。"""
+        """Q12-B 严格校验：ok!=true / 缺 bindings / 缺字段 / bound 非布尔都拒。
+
+        bound=true 但俱乐部信息全空是平台合法状态（team 行未关联俱乐部，
+        2026-11-05 契约核对）：收下，消费端走 NOT_BOUND 反问降级，不整群拒收。
+        """
         for payload in (
             {"ok": False, "bindings": []},
             {"ok": True},
             {"ok": True, "bindings": [{"qq": "1"}]},
             {"ok": True, "bindings": [{"qq": "1", "bound": "yes"}]},
-            {"ok": True, "bindings": [{"qq": "1", "bound": True}]},
         ):
             with pytest.raises(BindingsError):
                 client_mod.parse_response(payload)
         assert client_mod.parse_response('{"ok":true,"bindings":[{"qq":"1","bound":false}]}')["1"]["bound"] is False
+        kept = client_mod.parse_response(
+            '{"ok":true,"bindings":['
+            '{"qq":"1","bound":true,"clubId":null,"clubName":null,"teamName":null,"isCpu":null}]}'
+        )["1"]
+        assert kept["bound"] is True and kept["clubId"] is None
 
     def test_network_failure_is_bindings_error(self):
         async def transport(method, url, headers=None, body=None):

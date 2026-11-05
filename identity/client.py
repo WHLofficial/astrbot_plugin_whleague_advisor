@@ -76,10 +76,10 @@ def parse_response(payload: dict | str) -> dict[str, dict]:
         qq = str(item["qq"])
         if not isinstance(item["bound"], bool):
             raise BindingsError(f"绑定条目 bound 不是布尔: {qq}")
-        if item["bound"]:
-            # bound=true 必须给 clubId/clubName 或至少 teamName（§4.7 clubId 可空）
-            if item.get("clubId") is None and not (item.get("teamName") or item.get("clubName")):
-                raise BindingsError(f"绑定条目 bound=true 但无俱乐部信息: {qq}")
+        # bound=true 且 clubId/clubName/teamName 全空是平台合法状态（team 行未关联俱乐部，
+        # bot-bindings.ts 刻意保留 bound:true/clubId:null 语义）：保留条目不拒收，
+        # 消费端 _club_from_binding 会走 teamName → None → NOT_BOUND 反问的降级链
+        # （2026-11-05 与平台实测契约核对；拒收会让整群查询降级，过严）
         out[qq] = item
     return out
 
