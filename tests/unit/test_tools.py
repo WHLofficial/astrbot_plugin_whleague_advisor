@@ -440,14 +440,20 @@ class TestPlayerValue:
     def test_stale_market_refuses_price(self, conn):
         """市场数据硬过期（>30min）→ STALE，不给具体价（§8.1）。"""
         old = "2026-11-04T00:00:00+00:00"
-        for table in ("listings", "deals", "transfer_board"):
+        tables = ("listings", "deals", "transfer_board")
+        originals = {}
+        for table in tables:
+            rows = conn.execute(f"SELECT DISTINCT updated_at FROM {table}").fetchall()
+            assert len(rows) == 1, f"{table} seed 时间不唯一，无法安全恢复"
+            originals[table] = rows[0][0]
+        for table in tables:
             conn.execute(f"UPDATE {table} SET updated_at = ?", (old,))
         try:
             env = call(build_tool_ctx(conn), "whl_player_value", {"name": "Harry Kane"})
             assert env["error"]["code"] == "STALE"
         finally:
-            for table in ("listings", "deals", "transfer_board"):
-                conn.execute(f"UPDATE {table} SET updated_at = '2026-11-05T00:00:00+00:00'")
+            for table, updated_at in originals.items():
+                conn.execute(f"UPDATE {table} SET updated_at = ?", (updated_at,))
 
     def test_not_found(self, ctx):
         env = call(ctx, "whl_player_value", {"name": "Nobody Here"})

@@ -338,6 +338,9 @@ class WhleagueAdvisorPlugin(Star):
         问「赛季/积分榜/排名/转会窗什么时候开」先用本工具；要看具体某队的详情改用
         whl_team_brief。注意：这是 WHL 虚拟联赛（FC 数据），不是现实足球。
 
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+
         Args:
             scope(string): 可选。top 或 second，分别指顶级联赛、次级联赛。
             tournament(string): 可选。赛事名，如「S9 | 顶级联赛」；不填给全部联赛摘要。
@@ -352,6 +355,9 @@ class WhleagueAdvisorPlugin(Star):
         team 和 person 都不填时按「发送者绑定的队」解析（「我们队」）；person 填群成员
         名字时按「他执教的队」解析，回答里要说明。问「某某是谁/执教哪队」用
         view=person。查不到绑定会返回 NOT_BOUND，此时应反问用户执教哪支队。
+
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
 
         Args:
             team(string): 可选。队名，如「曼联」；库里存中文队名。
@@ -369,6 +375,9 @@ class WhleagueAdvisorPlugin(Star):
         当轮把中文译成拉丁名（如 萨拉赫→Mohamed Salah）再传 name。若返回 NOT_A_PLAYER
         说明这个名字是群成员不是球员；返回 NOT_FOUND 时按 hint 译名后重试一次。
 
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+
         Args:
             name(string): 球员拉丁名，如 Mohamed Salah、Bukayo Saka。
             detail(boolean): 可选。true 时附完整属性百分位表（默认只给 3 强 3 弱）。
@@ -380,6 +389,9 @@ class WhleagueAdvisorPlugin(Star):
         """查 WHL 联赛转会市场：当前挂牌（要价/竞价/截止）、转会名单、最近成交。
 
         可按位置（position，如 ST/CB）或球队（club）过滤。数据来自公开挂牌与成交记录。
+
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
 
         Args:
             position(string): 可选。平台位置名过滤：GK/CB/RB/LB/CDM/CM/CAM/RM/LM/RW/LW/ST。
@@ -396,6 +408,9 @@ class WhleagueAdvisorPlugin(Star):
         任何情况下不能说「官方身价」。assumptions 传假设场景（如 CA 涨到 92、预算
         30m）时会按假设重算并标 scenario=true，此时必须向用户说明是假设值。
 
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+
         Args:
             name(string): 球员拉丁名（中文先现译）。
             detail(boolean): 可选。true 时附完整属性百分位。
@@ -409,6 +424,9 @@ class WhleagueAdvisorPlugin(Star):
 
         跨位置只比位置内百分位。两边都必须是本联赛球员；一边不是球员会返回
         NOT_A_PLAYER。用户问「现实里谁更强」时不要用本工具（那是现实足球问题）。
+
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
 
         Args:
             a(string): 球员 A 拉丁名。
@@ -424,6 +442,9 @@ class WhleagueAdvisorPlugin(Star):
         team/person 都不填时按「发送者绑定的队」解析；person 填群成员名时按其执教的
         队解析。查不到绑定返回 NOT_BOUND，要反问而不是猜队名。
 
+        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
+        用户明确要榜单/多条/详细数据，或估价/规则类需要时，按需保留必要数字。
+
         Args:
             team(string): 可选。队名。
             person(string): 可选。群成员名，按其执教的队解析。
@@ -436,10 +457,11 @@ class WhleagueAdvisorPlugin(Star):
     @filter.llm_tool("whl_rules_lookup")
     async def whl_rules_lookup(self, event: AstrMessageEvent, **kwargs) -> str:
         """查 WHL 联赛规则：转会窗、挂牌价边界、出价与截止、激活、保护期、解约费、
-        违约金改价区间、训练营学员、能力档位、涨薪要求、工资口径、身价口径、交易税、
+        违约金改价区间、训练营球员、能力档位、涨薪要求、工资口径、身价口径、交易税、
         PlayStyle、消费券。
 
-        回答时逐字引用返回的规则原文（数字不要改写）；规则库没有的主题要明确说没有。
+        回答时逐字引用返回的规则原文（数字不要改写）；只引用与问题直接相关的规则，不要
+        整节复述；规则库没有的主题要明确说没有。
 
         Args:
             question(string): 规则问题，如「激活要多少钱」「保护期是多久」。

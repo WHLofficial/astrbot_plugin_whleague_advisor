@@ -87,7 +87,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     squad_bit = ""
     if data.get("squad"):
         sq = data["squad"]
-        squad_bit = f"；一线队 {sq['senior']} 人{'，学员 ' + str(sq['trainee']) + ' 人' if sq['trainee'] else ''}，周薪总额 {sq['total_wage_m']:g}m"
+        squad_bit = f"；一线队 {sq['senior']} 人{'，训练营球员 ' + str(sq['trainee']) + ' 人' if sq['trainee'] else ''}，周薪总额 {sq['total_wage_m']:g}m"
     summary = f"{club['name']}{rank_bit}{squad_bit}。"
     if data.get("next_match"):
         nm = data["next_match"]

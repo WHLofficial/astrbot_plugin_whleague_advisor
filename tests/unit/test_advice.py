@@ -107,7 +107,7 @@ class TestAssumptions:
         assert row["kind"] == "trainee"
         data = advice_valuation.row_to_value_data(row, {})
         assert data["kind"] == "trainee"
-        assert "学员" in advice_valuation.build_value_summary(data)
+        assert "训练营球员" in advice_valuation.build_value_summary(data)
 
     def test_summary_has_five_elements(self):
         """§5.5：summary 必须同时含市场参考 + RC + 可成交 + RC 状态 + 置信度。"""

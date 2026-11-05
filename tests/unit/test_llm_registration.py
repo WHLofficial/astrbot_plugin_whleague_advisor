@@ -149,6 +149,17 @@ def test_tool_descriptions_mention_boundary_and_hint():
     assert "本联赛" in compare_doc
 
 
+def test_tool_descriptions_carry_answer_style():
+    """回答风格写进工具描述：主 agent 直接调工具，不经过 advisor 子 agent。"""
+    plugin_cls = _load_main().WhleagueAdvisorPlugin
+    for name in EXPECTED_TOOLS:
+        doc = getattr(plugin_cls, name).__doc__ or ""
+        if name == "whl_rules_lookup":
+            assert "整节复述" in doc, f"{name} 缺规则类简洁约束"
+        else:
+            assert "不要逐字段复述返回的 data" in doc, f"{name} 缺回答风格约束"
+
+
 # ---- 端到端：经插件实例方法调用（AstrBot 真实调用路径，惰性导入必须可解析）----
 
 
