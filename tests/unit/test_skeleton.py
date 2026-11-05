@@ -77,6 +77,11 @@ def fake_astrbot(monkeypatch):
             captured["event_message_type"].append(str(event_type))
             return _passthrough()
 
+        @staticmethod
+        def on_llm_request(*args, **kwargs):
+            captured.setdefault("on_llm_request", []).append(True)
+            return _passthrough()
+
     fake_astrbot_mod = _module("astrbot")
     fake_api = _module("astrbot.api", logger=logging.getLogger("fake_astrbot"))
     fake_event = _module(
@@ -94,6 +99,7 @@ def fake_astrbot(monkeypatch):
     fake_filter_mod.command = fake_filter.command
     fake_filter_mod.llm_tool = fake_filter.llm_tool
     fake_filter_mod.event_message_type = fake_filter.event_message_type
+    fake_filter_mod.on_llm_request = fake_filter.on_llm_request
     fake_event.filter = fake_filter_mod
     fake_star = _module(
         "astrbot.api.star",

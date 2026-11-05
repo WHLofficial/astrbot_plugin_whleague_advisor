@@ -66,7 +66,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
 
     caveats = [
         "跨位置只比位置内百分位，不比原始属性（§5.5）" if not same_role else f"同为 {a_data.get('role_group')} 组，可直接对比",
-        "市场参考价是公开价格曲线估计，不是官方身价",
+        "参考价是公开挂牌/成交价估的，不是官方身价",
         "marketValue 生产为空，未使用",
     ]
     if assumptions:
@@ -96,7 +96,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="两边都只吃本联赛 FC 数据（§4.8）；现实足球对比不走本工具；涉及激活/匹配窗时用 whl_transfer_match 查卖方匹配权",
+        hint="两边都只吃本联赛 FC 数据（§4.8）；现实足球对比不走本工具；涉及激活/匹配机会时用 whl_transfer_match 查卖方能不能匹配",
     )
 
 

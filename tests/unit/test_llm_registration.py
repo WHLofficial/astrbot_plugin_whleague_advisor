@@ -50,6 +50,7 @@ def _load_main():
             permission_type = staticmethod(lambda *a, **k: _passthrough())
             llm_tool = staticmethod(lambda *a, **k: _passthrough())
             event_message_type = staticmethod(lambda *a, **k: _passthrough())
+            on_llm_request = staticmethod(lambda *a, **k: _passthrough())
 
         fake_astrbot = _module("astrbot")
         fake_api = _module("astrbot.api", logger=logging.getLogger("t"))
@@ -63,6 +64,7 @@ def _load_main():
         fake_filter_mod.permission_type = _FakeFilter.permission_type
         fake_filter_mod.llm_tool = _FakeFilter.llm_tool
         fake_filter_mod.event_message_type = _FakeFilter.event_message_type
+        fake_filter_mod.on_llm_request = _FakeFilter.on_llm_request
         fake_event.filter = fake_filter_mod
         fake_star = _module("astrbot.api.star", Context=type("Context", (), {}), Star=_FakeStar)
         fake_astrbot.api = fake_api

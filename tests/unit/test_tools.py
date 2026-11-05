@@ -425,7 +425,7 @@ class TestMarketBoard:
         assert data["facts"]["listings"] and len(data["facts"]["listings"]) <= 3
         assert data["facts"]["matchWindow"] == []
         assert set(data["signals"]) == {"heat", "supply", "price", "auction", "match"}
-        assert data["signals"]["match"] == "无匹配窗"
+        assert data["signals"]["match"] == "无匹配机会"
         assert env["presentation"] and "不要逐条念挂牌" in env["presentation"]
         assert "playerId" not in data["facts"]["listings"][0]
         deal_types = {d["type"] for d in data["facts"]["recentDeals"]}
@@ -440,7 +440,7 @@ class TestMarketBoard:
         assert window and window[0]["playerName"] == name
         assert window[0]["seller"]
         assert window[0]["highestBidM"] == 25.0
-        assert env["data"]["signals"]["match"] == "匹配窗 1 笔"
+        assert env["data"]["signals"]["match"] == "匹配机会 1 个"
 
     def test_ok_lists(self, ctx):
         env = call(ctx, "whl_market_board", {"detail": True})
@@ -493,11 +493,11 @@ class TestTransferMatch:
         assert env["ok"] is True
         data = env["data"]
         assert set(data) == {"facts", "signals"}
-        assert data["facts"]["listingStatus"] == "匹配窗"
+        assert data["facts"]["listingStatus"] == "匹配机会"
         assert data["facts"]["oldRcM"] == old_rc
         assert data["facts"]["minNewRcM"] == min_new
         assert data["signals"]["decision"] == "可匹配"
-        assert data["signals"]["window"] == "匹配窗开启"
+        assert data["signals"]["window"] == "可以加价匹配"
         assert "rules" not in data
         assert env["presentation"] and "不是普通挂牌" in env["presentation"]
 
@@ -505,8 +505,8 @@ class TestTransferMatch:
         name, _old_rc, min_new = _open_match_window(ctx, deadline="2000-01-01T00:00:00+00:00")
         env = call(ctx, "whl_transfer_match", {"name": name, "new_rc": min_new})
         assert env["ok"] is True
-        assert env["data"]["signals"]["window"] == "匹配窗已过截止"
-        assert env["data"]["signals"]["decision"] == "不可匹配（匹配窗已过）"
+        assert env["data"]["signals"]["window"] == "匹配时间已过"
+        assert env["data"]["signals"]["decision"] == "不可匹配（匹配时间已过）"
 
     def test_low_new_rc_needs_raise(self, ctx):
         name, _old_rc, min_new = _open_match_window(ctx)
@@ -518,7 +518,7 @@ class TestTransferMatch:
         env = call(ctx, "whl_transfer_match", {"name": "Harry Kane"})
         assert env["ok"] is True
         assert env["data"]["signals"]["window"] == "无挂牌"
-        assert env["data"]["signals"]["decision"] == "不可匹配（没有匹配窗）"
+        assert env["data"]["signals"]["decision"] == "不可匹配（没有匹配机会）"
 
     def test_detail_includes_rules(self, ctx):
         name, _old_rc, min_new = _open_match_window(ctx)
@@ -539,7 +539,7 @@ class TestPlayerValue:
         assert set(data) == {"player", "facts", "signals"}
         assert data["facts"]["rc"] == 50 and data["facts"]["market"]["mid"] is not None
         assert set(data["signals"]) == {"rc", "wage", "value", "age", "role"}
-        assert env["presentation"] and "不要复述全部区间数字" in env["presentation"]
+        assert env["presentation"] and "不要念数字清单" in env["presentation"]
         assert "fair" not in data and "deal" not in data
 
     def test_baseline_shape_and_summary_contract(self, ctx):
@@ -812,3 +812,55 @@ class TestGuards:
             assert any("降级" in c for c in env["caveats"])
         finally:
             dao.clear_degraded(conn, "market")
+
+
+# ---- 发送者身份预注入 ----
+
+
+class TestSenderIdentity:
+    def test_identity_line_bound_club(self):
+        preflight = import_plugin("identity.preflight")
+        line = preflight.identity_line({
+            "name": "WH", "qq": "1624687632", "club_name": "里昂", "via": "cache",
+        })
+        assert "【发送者身份】" in line
+        assert "绑定球队：里昂" in line
+        assert "不要把他的队当成对手" in line
+
+    def test_identity_line_unknown_asks_for_check(self):
+        preflight = import_plugin("identity.preflight")
+        line = preflight.identity_line({"name": "WH", "qq": "1624687632", "via": "unknown"})
+        assert "绑定球队：未知" in line
+        assert 'whl_team_brief(scope="me")' in line
+
+    def test_resolve_sender_identity_uses_local_binding(self, ctx):
+        ctx.members.apply_bindings(
+            GROUP, {"1624687632": {"bound": True, "clubId": 66, "clubName": "里昂"}},
+        )
+        call = context_mod.CallContext(
+            group_id=GROUP, sender_id="1624687632", sender_card="WH",
+        )
+        identity = run(resolve_mod.resolve_sender_identity(ctx, call))
+        assert identity["club_name"] == "里昂"
+        assert identity["via"] == "cache"
+
+    def test_fetch_bindings_fills_missing_qq_from_group_cache(self, ctx):
+        class _Bindings:
+            enabled = True
+            calls = []
+
+            async def fetch(self, group_id, qqs):
+                self.calls.append(qqs)
+                return {"1624687632": {"bound": True, "clubId": 66}}
+
+        ctx.bindings = _Bindings()
+        resolve_mod._BINDING_CACHE[GROUP] = (resolve_mod._monotonic(), {})
+        try:
+            fetched = run(resolve_mod._fetch_bindings(
+                ctx, context_mod.CallContext(group_id=GROUP, sender_id="1624687632"),
+                ["1624687632"],
+            ))
+        finally:
+            resolve_mod._BINDING_CACHE.pop(GROUP, None)
+        assert ctx.bindings.calls == [["1624687632"]]
+        assert fetched["1624687632"]["clubId"] == 66

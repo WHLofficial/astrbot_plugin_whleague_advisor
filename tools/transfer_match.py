@@ -1,7 +1,7 @@
-"""whl_transfer_match：激活后的匹配窗测算（club 仓 4.4.2.4）。
+"""whl_transfer_match：激活后的匹配机会测算（club 仓 4.4.2.4）。
 
-只做规则测算，不替用户提交。匹配窗是“被激活方（卖方）在竞价截止后 24h 内
-决定是否匹配”的权利，不是普通挂牌；插件没有 bids/transfers 表，最高价取
+只做规则测算，不替用户提交。匹配机会是“被激活方（卖方）在竞价截止后 24h 内
+决定要不要加价匹配”的权利，不是普通挂牌；插件没有 bids/transfers 表，最高价取
 listings.highest_bid，生涯匹配次数与可用资金由调用方可选传入。
 """
 
@@ -18,12 +18,12 @@ from .resolve import resolve_club, resolve_player
 
 SOURCE = ["listings", "players"]
 PRESENTATION = (
-    "先判断能不能匹配；重点说最低新违约金和差额；可用资金、生涯匹配次数不确定时"
-    "明确说不知道，不要编。匹配是激活后的权利，不是普通挂牌。"
+    "先说能不能加价匹配；重点说最低新违约金和差额；可用资金、生涯匹配次数不确定时"
+    "明确说不知道，不要编。这是被激活后原队的匹配权，不是普通挂牌。"
 )
 
 RULES = (
-    {"title": "匹配窗", "text": "竞价截止后 24 小时内，被激活方（卖方）可以匹配；挂牌状态为 matched_pending。"},
+    {"title": "匹配机会", "text": "竞价截止后 24 小时内，被激活方（卖方）可以加价匹配；挂牌状态为 matched_pending。"},
     {"title": "新违约金门槛", "text": "新违约金必须是正整数 m，且同时高于原违约金和当前竞价最高价；不受改违约金（RC）的 ±10%/±50% 幅度约束。"},
     {"title": "差额", "text": "差额 = 新违约金 − 原违约金，审核通过时由匹配方支付并销毁。"},
     {"title": "生涯一次", "text": "每名球员生涯最多被完成匹配一次；已完成的 match 单即占用。"},
@@ -75,15 +75,15 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     if listing and player.get("release_fee") is None:
         caveats.append("原违约金缺失，按 0m 计")
     if listing and listing.get("highest_bid") is None:
-        caveats.append("匹配窗挂牌没有最高价快照，门槛无法精确计算")
+        caveats.append("匹配机会挂牌没有最高价快照，门槛无法精确计算")
     if available_funds is None:
         caveats.append("未提供可用资金，未校验差额支付能力")
     if already_matched is None:
         caveats.append("未提供生涯匹配次数；平台按已完成 match 单占用")
     if listing and not listing.get("deadline_at"):
-        caveats.append("匹配窗缺少截止时间，无法校验 24 小时窗口")
+        caveats.append("匹配机会缺少截止时间，无法校验 24 小时窗口")
     if listing and deadline_passed:
-        caveats.append("匹配窗截止时间已过，平台应已关闭该窗，需以线上状态为准")
+        caveats.append("匹配时间已过，平台应已关闭该机会，需以线上状态为准")
     report = stale_report(ctx.conn, ("market",), ctx.now())
     caveats.extend(report["caveats"])
 
@@ -116,24 +116,24 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
             listing, new_rc, beats_gates, funds_ok, already_matched, integer_ok,
             deadline_passed, caller_is_seller,
         ),
-        "wage": "匹配后必须重谈工资" if listing else "无匹配窗",
+        "wage": "匹配后必须重谈工资" if listing else "没有匹配机会",
     }
 
     if listing:
-        bits = [f"{facts['player']['name']} 在匹配窗"]
+        bits = [f"{facts['player']['name']} 有匹配机会"]
         if player.get("release_fee") is not None:
-            bits.append(f"原违约金（RC）{old_rc:g}m")
+            bits.append(f"原违约金 {old_rc:g}m")
         if highest is not None:
-            bits.append(f"当前最高价 {highest:g}m")
+            bits.append(f"当前最高出价 {highest:g}m")
         if min_new_rc is not None:
             bits.append(f"新违约金至少 {min_new_rc:g}m")
         if diff is not None:
             bits.append(f"差额 {diff:g}m（销毁）")
         summary = "，".join(bits) + f"；{signals['decision']}。"
     elif active_listing:
-        summary = f"{facts['player']['name']} 当前挂牌状态为 {active_listing.get('status')}，尚未进入匹配窗。"
+        summary = f"{facts['player']['name']} 当前挂牌状态为 {active_listing.get('status')}，还没进入匹配机会。"
     else:
-        summary = f"{facts['player']['name']} 当前没有挂牌，不存在匹配窗。"
+        summary = f"{facts['player']['name']} 当前没有挂牌，没有匹配机会。"
 
     if detail:
         payload = {**facts, "signals": signals, "rules": list(RULES), "listing": listing or active_listing}
@@ -147,7 +147,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="问市场里还有哪些匹配窗用 whl_market_board；不要编造最高价或资金",
+        hint="问市场里还有哪些匹配机会用 whl_market_board；不要编造最高出价或资金",
     )
 
 
@@ -156,15 +156,15 @@ def _window_signal(listing: dict | None, active: dict | None, passed: bool | Non
         if not active:
             return "无挂牌"
         status = {"listed": "挂牌中", "bidding": "竞价中"}.get(active.get("status"), active.get("status"))
-        return f"挂牌状态 {status}，未进匹配窗"
+        return f"挂牌状态 {status}，还没进入匹配机会"
     if passed:
-        return "匹配窗已过截止"
-    return "匹配窗开启" if listing.get("deadline_at") else "匹配窗开启（截止时间未知）"
+        return "匹配时间已过"
+    return "可以加价匹配" if listing.get("deadline_at") else "可以加价匹配（截止时间未知）"
 
 
 def _gate_signal(listing: dict | None, new_rc: float | None, beats_gates: bool, integer_ok: bool) -> str:
     if listing is None:
-        return "无匹配窗"
+        return "没有匹配机会"
     if new_rc is None:
         return "需给出新违约金"
     if not integer_ok:
@@ -197,11 +197,11 @@ def _decision_signal(
     caller_is_seller: bool | None,
 ) -> str:
     if listing is None:
-        return "不可匹配（没有匹配窗）"
+        return "不可匹配（没有匹配机会）"
     if caller_is_seller is False:
         return "不可匹配（只有卖方能匹配）"
     if window_passed:
-        return "不可匹配（匹配窗已过）"
+        return "不可匹配（匹配时间已过）"
     if already_matched is True:
         return "不可匹配（生涯已匹配过）"
     if new_rc is None:
@@ -224,7 +224,7 @@ def _decision_signal(
 
 def _status_text(status: str | None) -> str | None:
     return {
-        "matched_pending": "匹配窗",
+        "matched_pending": "匹配机会",
         "listed": "挂牌中",
         "bidding": "竞价中",
         "delisted": "已下架",

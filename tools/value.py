@@ -1,4 +1,4 @@
-"""whl_player_value：能力等级 + 市场参考价 + 可成交区间，可带假设场景（设计 §5.5/§5.7）。
+"""whl_player_value：能力等级 + 参考价/可能成交价，可带假设场景（设计 §5.5/§5.7）。
 
 默认读 player_scores 基线（<1ms）；带 assumptions 时用同一 advice/ 纯函数现场
 重算该球员（不是 LLM 算），scenario=true、假设写进 caveats。
@@ -18,12 +18,16 @@ from .player import _WAGE_TEXT, _attrs_of, _baseline
 from .resolve import resolve_player
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
-PRESENTATION = "先给一句价格判断；只挑一个最突出的信号（违约金、可成交区间、工资、年龄）展开，其余一句带过；不要复述全部区间数字。"
+PRESENTATION = (
+    "先给一句价格判断（大概值多少/可能成交价）；只挑一个最影响价格的点"
+    "（违约金、工资、年龄、买方预算）展开，其余一句带过；不要念数字清单，"
+    "也不要主动说“可成交区间/置信度”这类内部词。"
+)
 _RC_TEXT = {
-    "rc_overpriced": "违约金（RC）高于市场参考价",
-    "rc_suppressed": "违约金（RC）压价",
-    "rc_capped": "违约金（RC）封顶",
-    "rc_fair": "违约金（RC）不压价",
+    "rc_overpriced": "违约金太高（按违约金买不划算）",
+    "rc_suppressed": "违约金会压价",
+    "rc_capped": "违约金封顶（高端卖不到参考价）",
+    "rc_fair": "违约金不挡价",
 }
 
 
@@ -107,9 +111,9 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         fair_mid = (data.get("fair") or {}).get("mid")
         rc_value = (data.get("rc") or {}).get("value")
         name = data["player"].get("name")
-        summary = f"{name}：市场参考价中位 {fair_mid:g}m" if fair_mid is not None else f"{name}：市场参考价缺失"
+        summary = f"{name}：大概值 {fair_mid:g}m" if fair_mid is not None else f"{name}：参考价缺失"
         if rc_value is not None:
-            summary += f"，违约金（RC）{rc_value:g}m。"
+            summary += f"，违约金 {rc_value:g}m。"
         else:
             summary += "，无违约金。"
         if data.get("kind") == "trainee":
@@ -125,7 +129,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="任何情况下不说「官方身价」；区间是市场参考价 + 违约金（RC）约束下的可成交区间；涉及激活/匹配窗时用 whl_transfer_match 查卖方匹配权",
+        hint="任何情况下不说「官方身价」；先给大概值/可能成交价，别主动说可成交区间、置信度这类内部词；涉及激活/匹配时用 whl_transfer_match 查卖方能不能加价匹配",
     )
 
 
@@ -136,17 +140,17 @@ def _compact_data(full: dict) -> dict:
     model = full.get("model") or {}
     player = full.get("player") or {}
     if deal and deal.get("flag") == "no_listable_range":
-        value_signal = "无合法区间"
+        value_signal = "没有可谈区间"
     elif deal and deal.get("low") is not None and deal.get("high") is not None:
         fair_mid = fair.get("mid")
         if fair_mid is not None and deal["high"] < fair_mid:
-            value_signal = "上限低于市场"
+            value_signal = "卖不到参考价"
         elif fair_mid is not None and deal["low"] <= fair_mid <= deal["high"]:
-            value_signal = "可成交覆盖市场"
+            value_signal = "能卖到参考价"
         else:
-            value_signal = "可成交偏离市场"
+            value_signal = "价格偏离参考价"
     elif fair.get("low") is not None:
-        value_signal = "只有市场参考"
+        value_signal = "只有参考价"
     else:
         value_signal = "数据不足"
     role_n = model.get("role_n")

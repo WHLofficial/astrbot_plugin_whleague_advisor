@@ -345,7 +345,24 @@ async def _fetch_bindings(ctx: ToolContext, call: CallContext, qqs: list[str]) -
     cache_key = str(call.group_id or "")
     cached = _BINDING_CACHE.get(cache_key)
     if cached and now - cached[0] < 600:
-        return {q: cached[1][q] for q in qqs if q in cached[1]}
+        missing = [q for q in qqs if q not in cached[1]]
+        if not missing:
+            return {q: cached[1][q] for q in qqs if q in cached[1]}
+        # 群里已有缓存但没有这个 QQ：只补查缺的，不能直接返回空（否则预注入永远
+        # 拿不到第一次出现的发送者绑定）。
+        try:
+            fetched = await client.fetch(cache_key, missing)
+        except BindingsUnavailable:
+            return {q: cached[1][q] for q in qqs if q in cached[1]}
+        except BindingsError as exc:
+            raise _BindingsDegraded(str(exc)) from exc
+        bindings = {**cached[1], **fetched}
+        # 绑定服务只返回已绑定的人；补空值做负缓存，避免未绑定的发送者每条消息都请求一次。
+        for q in missing:
+            bindings.setdefault(q, {})
+        _BINDING_CACHE[cache_key] = (now, bindings)
+        _remember_bindings(ctx, cache_key, fetched)
+        return {q: bindings[q] for q in qqs if q in bindings}
     try:
         bindings = await client.fetch(cache_key, qqs)
     except BindingsUnavailable:
@@ -353,13 +370,17 @@ async def _fetch_bindings(ctx: ToolContext, call: CallContext, qqs: list[str]) -
     except BindingsError as exc:
         raise _BindingsDegraded(str(exc)) from exc
     _BINDING_CACHE[cache_key] = (now, bindings)
-    # 顺手合并进群成员缓存（§4.7：把绑定一起落 SQLite）
+    _remember_bindings(ctx, cache_key, bindings)
+    return bindings
+
+
+def _remember_bindings(ctx: ToolContext, cache_key: str, bindings: dict) -> None:
+    """把绑定顺手写进群成员缓存（§4.7：SQLite 落库）；失败不影响回答。"""
     if ctx.members is not None:
         try:
             ctx.members.apply_bindings(cache_key, bindings)
         except Exception:  # noqa: BLE001 - 缓存写失败不影响回答
             pass
-    return bindings
 
 
 class _BindingsDegraded(Exception):
@@ -373,6 +394,77 @@ def _monotonic() -> float:
     import time
 
     return time.monotonic()
+
+
+async def resolve_sender_identity(ctx: ToolContext, call: CallContext) -> dict:
+    """发送者身份（给 LLM 请求预注入用）：名字、QQ、绑定球队、来源。
+
+    和 resolve_team_arg 不同，这里不抛 NOT_BOUND：查不到就返回 club=None，
+    由调用方写成“未知，先反问/查 scope=me”，不能让整条回复失败。
+    """
+    qq = str(call.sender_id or "")
+    name = call.sender_card or qq or "未知"
+    if not qq or not call.group_id:
+        return {"name": name, "qq": qq, "club": None, "club_name": None, "via": "unknown", "caveats": []}
+
+    group_id = str(call.group_id)
+    caveats: list[str] = []
+    member = ctx.members.binding_of(group_id, qq) if ctx.members is not None else None
+    club = None
+    via = "unknown"
+
+    # 1) 本地群成员缓存（工具查过 scope=me 后会落库）
+    if member and member.get("bound") and member.get("club_id"):
+        try:
+            club = dao.read_club_by_id(ctx.conn, int(member["club_id"]))
+        except (TypeError, ValueError):
+            club = None
+        if club:
+            via = "cache"
+
+    # 2) 绑定服务（有 10 分钟缓存；缺这个 QQ 时 _fetch_bindings 会补查）
+    if club is None:
+        try:
+            bindings = await _fetch_bindings(ctx, call, [qq])
+        except _BindingsDegraded:
+            caveats.append("身份服务暂时不可用")
+            bindings = {}
+        item = bindings.get(qq)
+        if item and item.get("bound"):
+            club = _club_from_binding(ctx.conn, item)
+            if club:
+                via = "binding"
+            else:
+                team_name = item.get("teamName") or item.get("clubName")
+                if team_name:
+                    return {
+                        "name": name, "qq": qq, "club": None, "club_name": str(team_name),
+                        "via": "binding_name", "caveats": caveats,
+                    }
+
+    # 3) 本地缓存只有 club_name（俱乐部行还没同步到）
+    if club is None and member and member.get("bound"):
+        team_name = member.get("club_name") or member.get("team_name")
+        if team_name:
+            return {
+                "name": name, "qq": qq, "club": None, "club_name": str(team_name),
+                "via": "cache_name", "caveats": caveats,
+            }
+
+    # 4) 群名片弱信号（只用于提示，不当成确定绑定）
+    if club is None:
+        try:
+            club = _club_from_card(ctx.conn, call.sender_card)
+        except ToolError:
+            club = None
+        if club:
+            via = "card"
+
+    return {
+        "name": name, "qq": qq, "club": club,
+        "club_name": club["name"] if club else None,
+        "via": via, "caveats": caveats,
+    }
 
 
 async def resolve_team_arg(

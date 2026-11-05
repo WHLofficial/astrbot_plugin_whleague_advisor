@@ -64,7 +64,7 @@ astrbot plugin install https://github.com/WHLofficial/astrbot_plugin_whleague_ad
 
 配置齐备后，后台按分层频率同步（热 5 分钟：赛季/积分榜/赛程/挂牌/成交/转会广告板；温 15 分钟：俱乐部/球员名单；冷 60 分钟：全联盟名册索引/球员属性预取/估价模型重拟合；均可配置）。任一数据源失败时保留旧数据并在 `/whl状态` 中标记「已降级」，不会写入半新半旧的表。同步只调用公开只读 GET 接口；俱乐部详情等需鉴权端点在客户端层直接禁止。
 
-估价模型（`services/`）在每次冷层同步后重拟合：工资回归与可比价格曲线（只认挂牌/转会广告板/强制拍卖等公开价格点，GK 不单独拟合）存 `model_params`（带 `n` / `r2` / `version`），逐球员的能力画像与市场参考价区间物化到 `player_scores` 基线。`marketValue` 生产侧全空，模型不使用该列。`whl_player_value` 等工具默认读该基线作答；带 `assumptions`（ca_delta/age/pa/budget/role）时用同一纯函数现场重算并标 `scenario=true`。
+估价模型（`services/`）在每次冷层同步后重拟合：工资回归与可比价格曲线（只认挂牌/转会广告板/强制拍卖等公开价格点，GK 不单独拟合）存 `model_params`（带 `n` / `r2` / `version`），逐球员的能力画像与参考价区间物化到 `player_scores` 基线。`marketValue` 生产侧全空，模型不使用该列。`whl_player_value` 等工具默认读该基线作答；带 `assumptions`（ca_delta/age/pa/budget/role）时用同一纯函数现场重算并标 `scenario=true`。
 
 ## 问答工具（9 个，LLM 自动调用）
 
@@ -74,8 +74,8 @@ astrbot plugin install https://github.com/WHLofficial/astrbot_plugin_whleague_ad
 | `whl_team_brief` | 球队概况；默认只给判断素材，`detail=true` 才给完整排名、阵容、工资、近期战绩；`view=person` 查群成员是谁/执教哪队 |
 | `whl_player_lookup` | 球员画像、合同、状态、所属队；默认只给判断素材，`detail=true` 才给完整合同/CA（当前能力）/PA（潜力）/百分位（只认拉丁名，中文先现译） |
 | `whl_market_board` | 挂牌、挂牌价、竞价、转会广告板与成交，可按位置/球队过滤 |
-| `whl_player_value` | 市场参考价 + 违约金（RC）约束下的可成交区间，可带假设场景；能力等级仅作工资/估价解释口径 |
-| `whl_transfer_match` | 激活后的匹配窗测算：最低新违约金、差额、资金/生涯次数；匹配不是普通挂牌 |
+| `whl_player_value` | 参考价 + 违约金约束下的可能成交价，可带假设场景；能力等级仅作工资/估价解释口径 |
+| `whl_transfer_match` | 激活后的匹配机会测算：最低新违约金、差额、资金/生涯次数；匹配不是普通挂牌 |
 | `whl_compare_players` | 两人能力/估价/合同对比（跨位置只比位置内百分位） |
 | `whl_match_lookup` | 某队下一场/上一场/交锋（「我们队」按发送者绑定解析） |
 | `whl_rules_lookup` | 联赛规则速查（插件内 rules.md 检索，确定性返回原文） |

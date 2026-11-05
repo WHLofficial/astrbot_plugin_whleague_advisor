@@ -11,9 +11,9 @@ from .resolve import resolve_club, role_group_of
 
 SOURCE = ["listings", "deals", "transfer_board"]
 PRESENTATION = (
-    "先给一句市场冷热判断；只挑一个最突出的信号（供给/价格/竞价/匹配窗）展开，其余一句带过；"
-    "不要逐条念挂牌。若有人处于匹配窗，先说明这是激活后的匹配权，不是普通挂牌："
-    "匹配要新违约金高于最高价，差额销毁，且每名球员生涯只能匹配一次。"
+    "先给一句市场冷热判断；只挑一个最突出的信号（供给/价格/竞价/匹配机会）展开，其余一句带过；"
+    "不要逐条念挂牌。若有人处于匹配机会，先说明这是被激活后原队可以加价匹配，不是普通挂牌："
+    "新违约金要高于最高出价，差额销毁，且每名球员生涯只能匹配一次。"
 )
 
 _LISTING_TYPE_TEXT = {
@@ -75,7 +75,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     matched_count = sum(1 for l in listings if l.get("status") == "matched_pending")
     counts = f"挂牌 {len(listings)} 条、转会广告板 {len(board)} 人、近期成交 {len(deals)} 笔"
     if matched_count:
-        counts += f"；匹配窗 {matched_count} 笔"
+        counts += f"；匹配机会 {matched_count} 个"
     if args.get("club"):
         counts = f"{club['name']}：{counts}"
     if detail:
@@ -90,7 +90,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=report["caveats"],
         stale=report["stale"],
-        hint="问某人估价参考用 whl_player_value；问匹配窗能不能匹配用 whl_transfer_match",
+        hint="问某人估价参考用 whl_player_value；问匹配机会能不能加价匹配用 whl_transfer_match",
     )
 
 
@@ -138,7 +138,7 @@ def _compact_data(data: dict, listings: list[dict], board: list[dict], deals: li
             "supply": supply,
             "price": price,
             "auction": auction,
-            "match": f"匹配窗 {len(matched)} 笔" if matched else "无匹配窗",
+            "match": f"匹配机会 {len(matched)} 个" if matched else "无匹配机会",
         },
     }
 

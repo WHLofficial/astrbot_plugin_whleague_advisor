@@ -12,7 +12,7 @@ v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores �
 
 v0.6.0 术语与转会匹配（本次）：
 - 默认输出改为 facts + signals + presentation，detail=true 才返回全量；
-- 新增 whl_transfer_match，whl_market_board 增加匹配窗；工具数 8→9；
+- 新增 whl_transfer_match，whl_market_board 增加匹配机会；工具数 8→9；
 - 用户-facing 术语统一（估价/市场参考价、违约金 RC、转会广告板等），
   能力等级降为工资/估价解释口径；新增 GLOSSARY.md。
 
@@ -44,6 +44,8 @@ v0.4.0 工具层（阶段 4）：
 - Star 子类经 __init_subclass__ 自动注册，metadata.yaml 字段优先；
 - 同步/工具模块（含 aiohttp）只在配置齐备时才导入，默认安装零额外导入。
 """
+
+import asyncio
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -333,6 +335,47 @@ class WhleagueAdvisorPlugin(Star):
         except Exception:  # noqa: BLE001 - 成员缓存是尽力而为
             logger.debug("群成员缓存刷新失败（群 %s）", _safe_group_id(event))
 
+    # ---- 发送者身份预注入（避免模型猜“你那队”）----
+
+    @filter.on_llm_request()
+    async def inject_sender_identity(self, event: AstrMessageEvent, req):
+        """把发送者绑定球队放进 system_prompt；绑定未知时要求先查/反问，不猜。"""
+        ctx = self._tool_ctx
+        if ctx is None:
+            return
+        group_id = _safe_group_id(event)
+        if not group_id or not ctx.group_allowed(group_id):
+            return
+        prompt = getattr(req, "system_prompt", None)
+        if not isinstance(prompt, str):
+            return
+        from .identity.preflight import IDENTITY_MARKER, identity_line
+
+        if IDENTITY_MARKER in prompt:
+            return
+        from .tools.context import CallContext
+        from .tools.resolve import resolve_sender_identity
+
+        call = CallContext.from_event(event)
+        if not call.sender_id:
+            return
+        try:
+            identity = await asyncio.wait_for(
+                resolve_sender_identity(ctx, call), timeout=1.5
+            )
+        except asyncio.TimeoutError:
+            logger.debug("%s：发送者身份查询超时（群 %s），按未知身份继续", PLUGIN_NAME, group_id)
+            identity = {
+                "name": call.sender_card or call.sender_id,
+                "qq": call.sender_id,
+                "club_name": None,
+                "via": "timeout",
+            }
+        except Exception:  # noqa: BLE001 - 身份预注入失败不能挡回复
+            logger.debug("%s：发送者身份预注入失败（群 %s）", PLUGIN_NAME, group_id, exc_info=True)
+            return
+        req.system_prompt = prompt.rstrip() + "\n\n" + identity_line(identity)
+
     # ---- 9 个 whl_* 工具（AstrBot LLM FunctionTool）----
 
     def _tool_ctx_or_none(self):
@@ -418,10 +461,10 @@ class WhleagueAdvisorPlugin(Star):
 
     @filter.llm_tool("whl_player_value")
     async def whl_player_value(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查 WHL 联赛球员估价：能力等级 + 市场参考价 + 违约金（RC）约束下的可成交区间。
+        """查 WHL 联赛球员估价：能力等级 + 参考价 + 违约金约束下的可能成交价。
 
         默认 data 是判断素材（facts/signals），顶层 presentation 给出风格和取舍要求；
-        用户明确要完整估价明细（市场参考价、违约金（RC）状态、置信度、百分位）时才传 detail=true。
+        用户明确要完整估价明细（参考价、违约金状态、把握、百分位）时才传 detail=true。
         任何情况下不能说「官方身价」。能力等级只作为工资/估价的解释口径，回答不必主动报级。
         assumptions 传假设场景（如 CA（当前能力）涨到 92、预算
         30m）时会按假设重算并标 scenario=true，此时必须向用户说明是假设值。
@@ -437,10 +480,10 @@ class WhleagueAdvisorPlugin(Star):
 
     @filter.llm_tool("whl_transfer_match")
     async def whl_transfer_match(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查某球员的激活匹配窗：能不能匹配、最低新违约金、差额、资金与生涯次数。
+        """查某球员的激活后匹配机会：能不能加价匹配、最低新违约金、差额、资金与生涯次数。
 
-        匹配不是普通挂牌：竞价截止后 24h 内，被激活方（卖方）可以提交一个高于
-        原违约金和当前最高价的新违约金，差额销毁，每名球员生涯只能匹配一次。
+        这不是普通挂牌：竞价截止后 24h 内，被激活方（卖方）可以提交一个高于
+        原违约金和当前最高出价的新违约金，差额销毁，每名球员生涯只能匹配一次。
         插件没有 bids/transfers 表，最高价取挂牌快照；可用资金和生涯次数可传，
         不传要明确说不知道。
 
@@ -459,7 +502,7 @@ class WhleagueAdvisorPlugin(Star):
 
     @filter.llm_tool("whl_compare_players")
     async def whl_compare_players(self, event: AstrMessageEvent, **kwargs) -> str:
-        """对比 WHL 联赛两名球员：能力等级、位置内百分位、市场参考价、可成交区间、合同。
+        """对比 WHL 联赛两名球员：能力等级、位置内百分位、参考价、可能成交价、合同。
 
         跨位置只比位置内百分位。两边都必须是本联赛球员；一边不是球员会返回
         NOT_A_PLAYER。用户问「现实里谁更强」时不要用本工具（那是现实足球问题）。
