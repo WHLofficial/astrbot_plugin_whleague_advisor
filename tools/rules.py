@@ -84,7 +84,7 @@ def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         raise ToolError(
             NO_DATA,
             f"规则速查里没有覆盖「{query}」的条目",
-            hint="规则库只有 15 条固定主题（转会窗/挂牌/激活/解约/RC/工资/训练营球员等）；"
+            hint="规则库只有 15 条固定主题（转会窗/挂牌/激活/解约/违约金（RC）/工资/训练营球员等）；"
                  "没有的就说没有，不要编规则",
         )
     rules = [

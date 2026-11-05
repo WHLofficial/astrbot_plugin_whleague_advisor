@@ -1,4 +1,4 @@
-"""8 个 whl_* 的 llm_tool 注册面校验（阶段 4 验收：主 agent 必须看得见）。
+"""9 个 whl_* 的 llm_tool 注册面校验（阶段 4 验收：主 agent 必须看得见）。
 
 AstrBot 注册路径（源码对照，astrbot 4.28.0）：
 * @filter.llm_tool(name) 在类定义时进全局 FunctionToolManager（star_handler.py:689-717）；
@@ -6,7 +6,7 @@ AstrBot 注册路径（源码对照，astrbot 4.28.0）：
   生成 JSON schema 参数，类型不在 SUPPORTED_TYPES 直接抛 ValueError（注册即崩）；
 * star_manager.py 装载时把 handler functools.partial 绑到插件实例，按 active 过滤。
 
-本文件用 AstrBot 同款 docstring_parser 校验 8 个 docstring 能解析出合法参数
+本文件用 AstrBot 同款 docstring_parser 校验 9 个 docstring 能解析出合法参数
 （类型映射后必须 ∈ SUPPORTED_TYPES），未安装 docstring_parser 时跳过（CI 兼容）。
 """
 
@@ -79,7 +79,8 @@ def _load_main():
 
 EXPECTED_TOOLS = (
     "whl_league_brief", "whl_team_brief", "whl_player_lookup", "whl_market_board",
-    "whl_player_value", "whl_compare_players", "whl_match_lookup", "whl_rules_lookup",
+    "whl_player_value", "whl_transfer_match", "whl_compare_players", "whl_match_lookup",
+    "whl_rules_lookup",
 )
 
 # AstrBot func_tool_manager.py 的映射与支持集（逐字对照）
@@ -103,7 +104,7 @@ def _params_of(docstring):
     return out
 
 
-def test_eight_tools_registered_as_methods():
+def test_nine_tools_registered_as_methods():
     plugin_cls = _load_main().WhleagueAdvisorPlugin
     for name in EXPECTED_TOOLS:
         method = getattr(plugin_cls, name, None)
@@ -206,7 +207,7 @@ def test_end_to_end_call_via_plugin_method():
     """审查问题 1 回归：main._call_tool 的惰性导入必须指向 tools/ 子包。
 
     AstrBot 真实调用 = handler(event, **kwargs) → _call_tool → facade；
-    此前 'from .facade import ...' 指向仓库根，生产装载下 8 个工具全部 ModuleNotFoundError。
+    此前 'from .facade import ...' 指向仓库根，生产装载下 9 个工具全部 ModuleNotFoundError。
     """
     plugin, _conn = _plugin_with_tool_ctx()
     raw = asyncio.run(plugin.whl_league_brief(_FakeEvent(), scope="top", limit=4))

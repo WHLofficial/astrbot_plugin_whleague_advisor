@@ -1,6 +1,6 @@
 """tools/ 全栈单测：fixtures 回放造全量库 → facade.call_tool 逐工具调用。
 
-覆盖：8 个工具各自的 ok 路径与关键错误码（NOT_BOUND / NOT_A_PLAYER / AMBIGUOUS /
+覆盖：9 个工具各自的 ok 路径与关键错误码（NOT_BOUND / NOT_A_PLAYER / AMBIGUOUS /
 NOT_FOUND / NO_DATA / STALE / RATE_LIMITED / BAD_ARG），I01–I06 评测意图的组件级等价物。
 全部离线；QQ 只从 CallContext 进（与 §4.7 一致，工具参数绝不收 qq）。
 """
@@ -423,9 +423,24 @@ class TestMarketBoard:
         assert set(data) == {"facts", "signals"}
         assert data["facts"]["counts"]["listings"] >= 1
         assert data["facts"]["listings"] and len(data["facts"]["listings"]) <= 3
-        assert set(data["signals"]) == {"heat", "supply", "price", "auction"}
+        assert data["facts"]["matchWindow"] == []
+        assert set(data["signals"]) == {"heat", "supply", "price", "auction", "match"}
+        assert data["signals"]["match"] == "无匹配窗"
         assert env["presentation"] and "不要逐条念挂牌" in env["presentation"]
         assert "playerId" not in data["facts"]["listings"][0]
+        deal_types = {d["type"] for d in data["facts"]["recentDeals"]}
+        assert deal_types
+        assert deal_types <= {"转会", "自由身", "激活", "降级", "升级", "强制拍卖", "解约"}
+
+    def test_matched_pending_shows_window(self, ctx):
+        name, _old_rc, _min_new = _open_match_window(ctx)
+        env = call(ctx, "whl_market_board", {})
+        assert env["ok"] is True
+        window = env["data"]["facts"]["matchWindow"]
+        assert window and window[0]["playerName"] == name
+        assert window[0]["seller"]
+        assert window[0]["highestBidM"] == 25.0
+        assert env["data"]["signals"]["match"] == "匹配窗 1 笔"
 
     def test_ok_lists(self, ctx):
         env = call(ctx, "whl_market_board", {"detail": True})
@@ -449,6 +464,70 @@ class TestMarketBoard:
         assert len(env["data"]["listings"]) <= 1
 
 
+def _open_match_window(ctx, highest_bid=25.0, deadline="2099-01-01T00:00:00+00:00"):
+    """把一条有违约金的挂牌改成 matched_pending，返回 (球员名, 原 RC, 最低新 RC)。"""
+    row = ctx.conn.execute(
+        "SELECT l.id, p.display_name, p.name, p.release_fee "
+        "FROM listings l JOIN players p ON p.id = l.player_id "
+        "WHERE p.release_fee IS NOT NULL AND p.release_fee > 0 "
+        "ORDER BY l.id LIMIT 1"
+    ).fetchone()
+    assert row is not None, "fixtures 里应有带违约金的挂牌球员"
+    ctx.conn.execute(
+        "UPDATE listings SET status = 'matched_pending', highest_bid = ?, bid_count = 1, "
+        "deadline_at = ? WHERE id = ?",
+        (highest_bid, deadline, row["id"]),
+    )
+    name = row["display_name"] or row["name"]
+    min_new = int(max(row["release_fee"], highest_bid)) + 1
+    return name, row["release_fee"], min_new
+
+
+class TestTransferMatch:
+    def test_matched_window_compact(self, ctx):
+        name, old_rc, min_new = _open_match_window(ctx)
+        env = call(ctx, "whl_transfer_match", {
+            "name": name, "new_rc": min_new,
+            "available_funds": 999, "already_matched": False,
+        })
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data) == {"facts", "signals"}
+        assert data["facts"]["listingStatus"] == "匹配窗"
+        assert data["facts"]["oldRcM"] == old_rc
+        assert data["facts"]["minNewRcM"] == min_new
+        assert data["signals"]["decision"] == "可匹配"
+        assert data["signals"]["window"] == "匹配窗开启"
+        assert "rules" not in data
+        assert env["presentation"] and "不是普通挂牌" in env["presentation"]
+
+    def test_expired_window_cannot_match(self, ctx):
+        name, _old_rc, min_new = _open_match_window(ctx, deadline="2000-01-01T00:00:00+00:00")
+        env = call(ctx, "whl_transfer_match", {"name": name, "new_rc": min_new})
+        assert env["ok"] is True
+        assert env["data"]["signals"]["window"] == "匹配窗已过截止"
+        assert env["data"]["signals"]["decision"] == "不可匹配（匹配窗已过）"
+
+    def test_low_new_rc_needs_raise(self, ctx):
+        name, _old_rc, min_new = _open_match_window(ctx)
+        env = call(ctx, "whl_transfer_match", {"name": name, "new_rc": min_new - 1})
+        assert env["ok"] is True
+        assert env["data"]["signals"]["decision"] == "需提高新违约金"
+
+    def test_no_window(self, ctx):
+        env = call(ctx, "whl_transfer_match", {"name": "Harry Kane"})
+        assert env["ok"] is True
+        assert env["data"]["signals"]["window"] == "无挂牌"
+        assert env["data"]["signals"]["decision"] == "不可匹配（没有匹配窗）"
+
+    def test_detail_includes_rules(self, ctx):
+        name, _old_rc, min_new = _open_match_window(ctx)
+        env = call(ctx, "whl_transfer_match", {"name": name, "new_rc": min_new, "detail": True})
+        assert env["ok"] is True
+        assert env["data"]["rules"]
+        assert any("生涯" in r["text"] for r in env["data"]["rules"])
+
+
 # ---- whl_player_value ----
 
 
@@ -470,7 +549,7 @@ class TestPlayerValue:
         data = env["data"]
         assert set(data) >= {"ability", "fair", "deal", "rc", "wage", "model", "flags"}
         summary = env["summary"]
-        for token in ("市场参考", "RC", "可成交", "RC 状态", "置信度"):
+        for token in ("市场参考", "违约金（RC）", "可成交", "违约金（RC）状态", "置信度"):
             assert token in summary
         assert "官方身价" not in summary
         assert any("marketValue" in c for c in env["caveats"])
@@ -671,7 +750,7 @@ class TestRulesLookup:
         """规则数字逐字来自 rules.md，不硬编码在工具里。"""
         env = call(ctx, "whl_rules_lookup", {"question": "挂牌价上下限怎么算", "detail": True})
         text = "\n".join(r["text"] for r in env["data"]["rules"])
-        assert "1.5×RC" in text and "0.5×违约金" in text
+        assert "1.5×违约金（RC）" in text and "0.5×违约金（RC）" in text
 
     def test_protection_and_activation(self, ctx):
         env = call(ctx, "whl_rules_lookup", {"question": "激活保护期要多少钱", "detail": True})

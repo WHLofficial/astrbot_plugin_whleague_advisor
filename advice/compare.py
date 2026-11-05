@@ -18,7 +18,7 @@ def diff_value_data(a_data: dict, b_data: dict, *, same_role: bool) -> dict:
     """两份 §5.5 value data → data.diff。
 
     same_role=False（跨位置）时去掉 fair/deal/rc/wage 的直接对比？不——区间仍可比
-    （不同角色也有市场价），但加注「跨位置：属性强度只比位置内百分位」。原始属性
+    （不同角色也有市场参考价），但加注「跨位置：能力只比位置内百分位」。原始属性
     两边本来就不进 value data（只有 profile_score/strengths/weaknesses），天然满足。
     """
     diff = {
@@ -34,7 +34,7 @@ def diff_value_data(a_data: dict, b_data: dict, *, same_role: bool) -> dict:
         "role_group": {"a": a_data.get("role_group"), "b": b_data.get("role_group")},
     }
     if not same_role:
-        diff["caveat"] = "两人位置组不同：强度只比各自位置内百分位（profile_score），不比原始属性"
+        diff["caveat"] = "两人位置组不同：能力只比各自位置内百分位（profile_score），不比原始属性"
     return diff
 
 
@@ -44,7 +44,7 @@ def compare_summary(a_name: str, b_name: str, diff: dict) -> str:
     level = diff.get("level") or {}
     if level.get("delta") is not None:
         winner = b_name if level["delta"] > 0 else a_name if level["delta"] < 0 else None
-        parts.append(f"档位 {level['a']:g} vs {level['b']:g}" + (f"（{winner} 高 {abs(level['delta']):g} 档）" if winner else "（同档）"))
+        parts.append(f"能力等级 {level['a']:g} vs {level['b']:g}" + (f"（{winner} 高 {abs(level['delta']):g} 级）" if winner else "（同级）"))
     ps = diff.get("profile_score") or {}
     if ps.get("delta") is not None:
         winner = b_name if ps["delta"] > 0 else a_name if ps["delta"] < 0 else None
@@ -53,7 +53,7 @@ def compare_summary(a_name: str, b_name: str, diff: dict) -> str:
         )
     fair = diff.get("fair_mid") or {}
     if fair.get("delta") is not None:
-        parts.append(f"市场中位 {fair['a']:g}m vs {fair['b']:g}m")
+        parts.append(f"市场参考价中位 {fair['a']:g}m vs {fair['b']:g}m")
     if diff.get("caveat"):
         parts.append(diff["caveat"])
     return "；".join(parts) + "。"

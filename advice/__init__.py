@@ -1,7 +1,7 @@
-"""advice/：估价与强度纯函数（设计 §6 / §5.7）。
+"""advice/：估价与能力纯函数（设计 §6 / §5.7）。
 
 只做计算，不碰网络、不做 I/O；工具层负责取数与信封。
-* strength：档位/画像/百分位（复用 services 的同一实现，保证基线与场景一致）；
+* strength：能力等级/画像/百分位（复用 services 的同一实现，保证基线与场景一致）；
 * valuation：基线装配 + assumptions 场景重算（ca_delta/age/pa/budget/role）；
 * compare：两人对比 diff（跨位置只比位置内百分位）。
 """

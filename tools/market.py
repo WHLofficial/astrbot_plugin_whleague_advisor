@@ -1,4 +1,4 @@
-"""whl_market_board：挂牌、要价、竞价、转会名单（设计 §6）。"""
+"""whl_market_board：挂牌、挂牌价、竞价、转会广告板（设计 §6）。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,27 @@ from .insights import median
 from .resolve import resolve_club, role_group_of
 
 SOURCE = ["listings", "deals", "transfer_board"]
-PRESENTATION = "先给一句市场冷热判断；只挑一个最突出的信号（供给/价格/竞价）展开，其余一句带过；不要逐条念挂牌。"
+PRESENTATION = (
+    "先给一句市场冷热判断；只挑一个最突出的信号（供给/价格/竞价/匹配窗）展开，其余一句带过；"
+    "不要逐条念挂牌。若有人处于匹配窗，先说明这是激活后的匹配权，不是普通挂牌："
+    "匹配要新违约金高于最高价，差额销毁，且每名球员生涯只能匹配一次。"
+)
+
+_LISTING_TYPE_TEXT = {
+    "normal": "普通挂牌",
+    "forced": "强制挂牌",
+    "activation": "激活",
+}
+
+_DEAL_TYPE_TEXT = {
+    "transfer": "转会",
+    "free_agent": "自由身",
+    "activation": "激活",
+    "demote": "降级",
+    "promotion": "升级",
+    "forced_auction": "强制拍卖",
+    "termination": "解约",
+}
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
@@ -47,12 +67,15 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         filters = [args[k] for k in ("position", "club") if args.get(k)]
         raise ToolError(
             NO_DATA,
-            "当前市场没有匹配" + ("（" + "、".join(map(str, filters)) + "）" if filters else "") + "的挂牌/名单/成交",
+            "当前市场没有匹配" + ("（" + "、".join(map(str, filters)) + "）" if filters else "") + "的挂牌/转会广告板/成交",
             hint="可以放宽 position/club 过滤再试；不要编造挂牌",
         )
 
     report = stale_report(ctx.conn, ("market",), ctx.now())
-    counts = f"挂牌 {len(listings)} 条、转会名单 {len(board)} 人、近期成交 {len(deals)} 笔"
+    matched_count = sum(1 for l in listings if l.get("status") == "matched_pending")
+    counts = f"挂牌 {len(listings)} 条、转会广告板 {len(board)} 人、近期成交 {len(deals)} 笔"
+    if matched_count:
+        counts += f"；匹配窗 {matched_count} 笔"
     if args.get("club"):
         counts = f"{club['name']}：{counts}"
     if detail:
@@ -67,7 +90,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=report["caveats"],
         stale=report["stale"],
-        hint="问某人身价参考用 whl_player_value",
+        hint="问某人估价参考用 whl_player_value；问匹配窗能不能匹配用 whl_transfer_match",
     )
 
 
@@ -80,12 +103,12 @@ def _compact_data(data: dict, listings: list[dict], board: list[dict], deals: li
     total = sum(counts.values())
     heat = "活跃" if total >= 8 else "一般" if total >= 2 else "冷清" if total else "数据不足"
     if counts["listings"] and counts["transferBoard"]:
-        supply = "挂牌多名单少" if counts["listings"] > counts["transferBoard"] else \
-                 "名单供给充足" if counts["transferBoard"] > counts["listings"] else "供需平衡"
+        supply = "挂牌多、转会广告板少" if counts["listings"] > counts["transferBoard"] else \
+                 "转会广告板供给充足" if counts["transferBoard"] > counts["listings"] else "供需平衡"
     elif counts["listings"]:
-        supply = "挂牌多名单少"
+        supply = "挂牌多、转会广告板少"
     elif counts["transferBoard"]:
-        supply = "名单供给充足"
+        supply = "转会广告板供给充足"
     else:
         supply = "数据不足"
     asks = [l.get("ask_price") for l in listings if l.get("ask_price") is not None]
@@ -94,21 +117,29 @@ def _compact_data(data: dict, listings: list[dict], board: list[dict], deals: li
     if ask_mid is None or fee_mid is None:
         price = "数据不足"
     elif ask_mid >= fee_mid * 1.15:
-        price = "要价偏高"
+        price = "挂牌价偏高"
     elif ask_mid <= fee_mid * 0.85:
-        price = "要价偏低"
+        price = "挂牌价偏低"
     else:
         price = "接近成交价"
     auction = "已有竞价" if any((l.get("bid_count") or 0) > 0 or l.get("highest_bid") is not None
                                for l in listings) else "无竞价"
+    matched = [l for l in listings if l.get("status") == "matched_pending"]
     return {
         "facts": {
             "counts": counts,
+            "matchWindow": [_slim_match(l) for l in matched[:3]],
             "listings": [_slim_listing(l) for l in data["listings"]],
             "transferBoard": [_slim_board(b) for b in data["transferBoard"]],
             "recentDeals": [_slim_deal(d) for d in data["recentDeals"]],
         },
-        "signals": {"heat": heat, "supply": supply, "price": price, "auction": auction},
+        "signals": {
+            "heat": heat,
+            "supply": supply,
+            "price": price,
+            "auction": auction,
+            "match": f"匹配窗 {len(matched)} 笔" if matched else "无匹配窗",
+        },
     }
 
 
@@ -119,6 +150,16 @@ def _slim_listing(l: dict) -> dict:
         "askPriceM": l.get("askPriceM"),
         "highestBidM": l.get("highestBidM"),
         "bidCount": l.get("bidCount"),
+    }
+
+
+def _slim_match(l: dict) -> dict:
+    return {
+        "playerName": l.get("player_name") or l.get("playerName"),
+        "seller": l.get("club_name") or l.get("seller"),
+        "type": _LISTING_TYPE_TEXT.get(l.get("type"), l.get("type")),
+        "highestBidM": l.get("highest_bid") if l.get("highest_bid") is not None else l.get("highestBidM"),
+        "deadlineAt": l.get("deadline_at") or l.get("deadlineAt"),
     }
 
 
@@ -134,7 +175,7 @@ def _slim_board(b: dict) -> dict:
 
 def _slim_deal(d: dict) -> dict:
     return {
-        "type": d.get("type"),
+        "type": _DEAL_TYPE_TEXT.get(d.get("type"), d.get("type")),
         "playerName": d.get("playerName"),
         "from": d.get("from"),
         "to": d.get("to"),

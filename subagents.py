@@ -50,7 +50,7 @@ COACH_SKILL_FALLBACK = (
 # 写给主模型看的触发范围（设计 §7.1：用 public_description 写清触发范围 + 30 题 handoff 评测兜底）。
 ADVISOR_PUBLIC_DESCRIPTION = (
     "转交给 WHL 联赛数据顾问（子 agent）。仅当用户询问本联赛（WHL/FC 虚拟联赛）的事实时使用："
-    "积分、赛程、球队、球员、合同、挂牌、成交、身价参考、补强建议、联赛规则。"
+    "积分、赛程、球队、球员、合同、挂牌、成交、估价参考、补强建议、联赛规则。"
     "日常闲聊（打招呼、吐槽、写文案、讲笑话等）不要转交、也不要为此调用任何工具，直接回答。"
 )
 COACH_PUBLIC_DESCRIPTION = (

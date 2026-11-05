@@ -129,7 +129,7 @@ async def _person_card(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         raise ToolError(
             NOT_FOUND,
             f"群里没找到「{person.lstrip('@')}」",
-            hint="确认群名片/昵称；如果他是某队教练，直接说队名",
+            hint="确认群名片/昵称；如果他是某队主教练，直接说队名",
         )
     if len(rows) > 1:
         raise ToolError(
@@ -166,7 +166,7 @@ async def _person_card(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         coaches = members.find_coaches(call.group_id or "", club["id"])
         if len(coaches) > 1:
             data["coaches"] = [c.get("card") or c.get("nickname") or c.get("qq") for c in coaches]
-            multi_coach = "同一队有多位绑定成员，未区分正教练（§4.7：不猜）"
+            multi_coach = "同一队有多位绑定成员，未区分主教练（§4.7：不猜）"
             data["caveat_multi_coach"] = multi_coach
             caveats.append(multi_coach)
     summary = (
@@ -279,7 +279,7 @@ def _full_summary(club: dict, data: dict) -> str:
     if data.get("squad"):
         sq = data["squad"]
         trainee = f"，训练营球员 {sq['trainee']} 人" if sq["trainee"] else ""
-        squad_bit = f"；一线队 {sq['senior']} 人{trainee}，周薪总额 {sq['total_wage_m']:g}m"
+        squad_bit = f"；一线队 {sq['senior']} 人{trainee}，工资总额 {sq['total_wage_m']:g}m/半赛季"
     summary = f"{club['name']}{rank_bit}{squad_bit}。"
     if data.get("next_match"):
         nm = data["next_match"]

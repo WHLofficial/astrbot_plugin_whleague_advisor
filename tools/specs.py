@@ -1,4 +1,4 @@
-"""八个工具的入参 spec（guard.schema 校验用；与 main.py 里 llm_tool docstring 一一对应）。
+"""九个工具的入参 spec（guard.schema 校验用；与 main.py 里 llm_tool docstring 一一对应）。
 
 改动入参契约时两处同步：本文件 + main.py 对应方法的 docstring（LLM 看到的是 docstring）。
 """
@@ -23,13 +23,21 @@ SPECS: dict[str, dict] = {
     },
     "whl_player_lookup": {
         "name": {"type": "string", "required": True, "desc": "球员名（拉丁名；中文请先译成拉丁名）"},
-        "detail": {"type": "bool", "default": False, "desc": "true=合同/CA/PA/工资全量 + 完整百分位；默认只给判断素材"},
+        "detail": {"type": "bool", "default": False, "desc": "true=合同/CA（当前能力）/PA（潜力）/工资全量 + 完整百分位；默认只给判断素材"},
     },
     "whl_market_board": {
         "position": {"type": "string", "choices": POSITIONS, "desc": "平台位置名过滤"},
         "club": {"type": "string", "desc": "队名过滤"},
         "limit": {"type": "int", "min": 1, "max": 50, "default": 15, "desc": "各列表条数上限（detail=true 时生效）"},
-        "detail": {"type": "bool", "default": False, "desc": "true=完整挂牌/名单/成交列表；默认只给判断素材"},
+        "detail": {"type": "bool", "default": False, "desc": "true=完整挂牌/转会广告板/成交列表；默认只给判断素材"},
+    },
+    "whl_transfer_match": {
+        "name": {"type": "string", "required": True, "desc": "球员名（拉丁名；中文先译）"},
+        "club": {"type": "string", "desc": "被激活方/卖方队名（可选；用于校验谁有权匹配）"},
+        "new_rc": {"type": "number", "min": 0.01, "desc": "准备提交的新违约金（正整数 m；不传则只算最低门槛）"},
+        "available_funds": {"type": "number", "min": 0, "desc": "可用资金（m，可选；用于校验差额）"},
+        "already_matched": {"type": "bool", "desc": "该球员是否生涯已匹配过（可选；插件无历史匹配表）"},
+        "detail": {"type": "bool", "default": False, "desc": "true=完整规则与原始挂牌字段；默认只给判断素材"},
     },
     "whl_player_value": {
         "name": {"type": "string", "required": True, "desc": "球员名（拉丁名）"},
@@ -40,7 +48,7 @@ SPECS: dict[str, dict] = {
         "a": {"type": "string", "required": True, "desc": "球员 A（拉丁名）"},
         "b": {"type": "string", "required": True, "desc": "球员 B（拉丁名）"},
         "assumptions": {"type": "object", "desc": "同一假设场景（可选）"},
-        "detail": {"type": "bool", "default": False, "desc": "true=完整两人的估价与 diff；默认只给判断素材"},
+        "detail": {"type": "bool", "default": False, "desc": "true=完整两人的能力/估价/合同与 diff；默认只给判断素材"},
     },
     "whl_match_lookup": {
         "team": {"type": "string", "desc": "队名（可选）"},

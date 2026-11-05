@@ -116,9 +116,9 @@ class TestAssumptions:
         data = advice_valuation.row_to_value_data(row, {"wage": {"r2": 0.9}, "comp": {"r2": 0.7}})
         summary = advice_valuation.build_value_summary(data)
         assert "市场参考" in summary
-        assert "RC 30m" in summary
+        assert "违约金（RC）30m" in summary
         assert "可成交" in summary
-        assert "RC 状态" in summary
+        assert "违约金（RC）状态" in summary
         assert "置信度" in summary
         assert "官方身价" not in summary
 

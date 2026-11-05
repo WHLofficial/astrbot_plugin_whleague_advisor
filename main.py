@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.5.0）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.6.0）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -10,7 +10,13 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
 
-v0.5.0 人设与子 agent（阶段 5，本次）：
+v0.6.0 术语与转会匹配（本次）：
+- 默认输出改为 facts + signals + presentation，detail=true 才返回全量；
+- 新增 whl_transfer_match，whl_market_board 增加匹配窗；工具数 8→9；
+- 用户-facing 术语统一（估价/市场参考价、违约金 RC、转会广告板等），
+  能力等级降为工资/估价解释口径；新增 GLOSSARY.md。
+
+v0.5.0 人设与子 agent（阶段 5）：
 - 配置齐备时动态注册两个 handoff 子 agent（设计 §7.1 方案 B / §4.8）：
   transfer_to_whl_advisor（只带 8 个 whl_*，system_prompt = prompt/advisor.md）与
   transfer_to_real_football_expert（只带 web_search_tavily，system_prompt =
@@ -49,15 +55,16 @@ from .subagents import HANDOFF_TOOL_NAMES
 
 TOOL_METHOD_NAMES = (
     "whl_league_brief", "whl_team_brief", "whl_player_lookup", "whl_market_board",
-    "whl_player_value", "whl_compare_players", "whl_match_lookup", "whl_rules_lookup",
+    "whl_player_value", "whl_transfer_match", "whl_compare_players", "whl_match_lookup",
+    "whl_rules_lookup",
 )
 
-# 空转/数据层失败时统一停用的名字：8 个 whl_* 工具 + 2 个 handoff（若已注册）。
+# 空转/数据层失败时统一停用的名字：9 个 whl_* 工具 + 2 个 handoff（若已注册）。
 DEACTIVATABLE_TOOL_NAMES = TOOL_METHOD_NAMES + HANDOFF_TOOL_NAMES
 
 
 class WhleagueAdvisorPlugin(Star):
-    """WHL 联赛顾问插件。指令：/whl状态（仅管理员）；8 个 whl_* 工具（配置齐备时）。"""
+    """WHL 联赛顾问插件。指令：/whl状态（仅管理员）；9 个 whl_* 工具（配置齐备时）。"""
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context, config)
@@ -198,7 +205,7 @@ class WhleagueAdvisorPlugin(Star):
     # ---- 工具注册/停用（Q15-A：未配置不注册）----
 
     async def _set_tools_active(self, active: bool) -> None:
-        """批量启/停 8 个 whl_* 工具与 2 个 handoff（未注册的名字返回 False，无害）。
+        """批量启/停 9 个 whl_* 工具与 2 个 handoff（未注册的名字返回 False，无害）。
 
         用 Context 的包装方法（context.py:375/404，内部转 FunctionToolManager 并
         维护 inactivated_llm_tools 持久化），不用裸 manager 以免状态不一致。
@@ -239,7 +246,7 @@ class WhleagueAdvisorPlugin(Star):
     async def _register_subagents(self) -> None:
         """动态注册两个 handoff 子 agent；失败只降级告警，不拖垮数据层与 whl_* 工具。
 
-        - transfer_to_whl_advisor：tools = 8 个 whl_*，system_prompt = prompt/advisor.md；
+        - transfer_to_whl_advisor：tools = 9 个 whl_*，system_prompt = prompt/advisor.md；
         - transfer_to_real_football_expert：tools = web_search_tavily，system_prompt =
           prompt/coach.md + 宿主 skill 正文（缺失走 subagents 内置降级指引）；
         - handoff 单向（子 agent 不能再转交）：subagents.assert_one_way 在注册前拒绝
@@ -326,7 +333,7 @@ class WhleagueAdvisorPlugin(Star):
         except Exception:  # noqa: BLE001 - 成员缓存是尽力而为
             logger.debug("群成员缓存刷新失败（群 %s）", _safe_group_id(event))
 
-    # ---- 8 个 whl_* 工具（AstrBot LLM FunctionTool）----
+    # ---- 9 个 whl_* 工具（AstrBot LLM FunctionTool）----
 
     def _tool_ctx_or_none(self):
         return self._tool_ctx
@@ -374,7 +381,7 @@ class WhleagueAdvisorPlugin(Star):
 
     @filter.llm_tool("whl_player_lookup")
     async def whl_player_lookup(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查 WHL 联赛球员画像：所属球队、位置年龄、档位、合同（违约金/工资/状态）。
+        """查 WHL 联赛球员画像：所属球队、位置年龄、能力等级、合同（违约金（RC）/工资/状态）。
 
         只吃本联赛 FC 数据，不是现实足球。库里只有拉丁名：用户说了中文名时，先在
         当轮把中文译成拉丁名（如 萨拉赫→Mohamed Salah）再传 name。若返回 NOT_A_PLAYER
@@ -382,39 +389,41 @@ class WhleagueAdvisorPlugin(Star):
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
         默认 data 是判断素材（facts/signals），不是完整合同/属性表；用户明确要完整
-        合同、CA/PA、工资或百分位时才传 detail=true。
+        合同、CA（当前能力）/PA（潜力）、工资或百分位时才传 detail=true。
+        能力等级只作为工资/估价的解释口径，回答不必主动报级。
 
         Args:
             name(string): 球员拉丁名，如 Mohamed Salah、Bukayo Saka。
-            detail(boolean): 可选。true=合同/CA/PA/工资全量 + 完整百分位；默认只给 facts/signals。
+            detail(boolean): 可选。true=合同/CA（当前能力）/PA（潜力）/工资全量 + 完整百分位；默认只给 facts/signals。
         """
         return await self._call_tool("whl_player_lookup", event, kwargs)
 
     @filter.llm_tool("whl_market_board")
     async def whl_market_board(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查 WHL 联赛转会市场：当前挂牌（要价/竞价/截止）、转会名单、最近成交。
+        """查 WHL 联赛转会市场：当前挂牌（挂牌价/竞价/截止）、转会广告板、最近成交。
 
-        可按位置（position，如 ST/CB）或球队（club）过滤。数据来自公开挂牌与成交记录。
+        可按位置（position，如 ST/CB）或球队（club）过滤。数据来自公开挂牌、转会广告板与成交记录。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
         默认 data 是判断素材（facts/signals），不是完整挂牌列表；顶层 presentation 给出
-        风格和取舍要求。用户明确要逐条挂牌/名单/成交时才传 detail=true。
+        风格和取舍要求。用户明确要逐条挂牌/转会广告板/成交时才传 detail=true。
 
         Args:
             position(string): 可选。平台位置名过滤：GK/CB/RB/LB/CDM/CM/CAM/RM/LM/RW/LW/ST。
             club(string): 可选。卖方队名过滤。
             limit(number): 可选。各列表条数上限，默认 15（detail=true 时生效）。
-            detail(boolean): 可选。true=完整挂牌/名单/成交列表；默认只给 facts/signals。
+            detail(boolean): 可选。true=完整挂牌/转会广告板/成交列表；默认只给 facts/signals。
         """
         return await self._call_tool("whl_market_board", event, kwargs)
 
     @filter.llm_tool("whl_player_value")
     async def whl_player_value(self, event: AstrMessageEvent, **kwargs) -> str:
-        """估 WHL 联赛球员身价：强度档位 + 市场参考区间 + RC 约束下的可成交区间。
+        """查 WHL 联赛球员估价：能力等级 + 市场参考价 + 违约金（RC）约束下的可成交区间。
 
         默认 data 是判断素材（facts/signals），顶层 presentation 给出风格和取舍要求；
-        用户明确要完整估价明细（市场区间、RC 状态、置信度、百分位）时才传 detail=true。
-        任何情况下不能说「官方身价」。assumptions 传假设场景（如 CA 涨到 92、预算
+        用户明确要完整估价明细（市场参考价、违约金（RC）状态、置信度、百分位）时才传 detail=true。
+        任何情况下不能说「官方身价」。能力等级只作为工资/估价的解释口径，回答不必主动报级。
+        assumptions 传假设场景（如 CA（当前能力）涨到 92、预算
         30m）时会按假设重算并标 scenario=true，此时必须向用户说明是假设值。
 
         回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
@@ -426,9 +435,31 @@ class WhleagueAdvisorPlugin(Star):
         """
         return await self._call_tool("whl_player_value", event, kwargs)
 
+    @filter.llm_tool("whl_transfer_match")
+    async def whl_transfer_match(self, event: AstrMessageEvent, **kwargs) -> str:
+        """查某球员的激活匹配窗：能不能匹配、最低新违约金、差额、资金与生涯次数。
+
+        匹配不是普通挂牌：竞价截止后 24h 内，被激活方（卖方）可以提交一个高于
+        原违约金和当前最高价的新违约金，差额销毁，每名球员生涯只能匹配一次。
+        插件没有 bids/transfers 表，最高价取挂牌快照；可用资金和生涯次数可传，
+        不传要明确说不知道。
+
+        回答时先用一句话判断能不能匹配，默认最多补 1–2 个关键数字；
+        不要逐字段复述返回的 data。用户要完整规则或原始挂牌字段时才传 detail=true。
+
+        Args:
+            name(string): 球员拉丁名（中文先译）。
+            club(string): 可选。被激活方/卖方队名，用于校验谁有权匹配。
+            new_rc(number): 可选。准备提交的新违约金（正整数 m）；不传只算最低门槛。
+            available_funds(number): 可选。可用资金（m），用于校验差额。
+            already_matched(boolean): 可选。该球员是否生涯已匹配过；插件无历史表。
+            detail(boolean): 可选。true=完整规则与原始挂牌字段；默认只给 facts/signals。
+        """
+        return await self._call_tool("whl_transfer_match", event, kwargs)
+
     @filter.llm_tool("whl_compare_players")
     async def whl_compare_players(self, event: AstrMessageEvent, **kwargs) -> str:
-        """对比 WHL 联赛两名球员：档位、位置内百分位、市场参考价、可成交价、合同。
+        """对比 WHL 联赛两名球员：能力等级、位置内百分位、市场参考价、可成交区间、合同。
 
         跨位置只比位置内百分位。两边都必须是本联赛球员；一边不是球员会返回
         NOT_A_PLAYER。用户问「现实里谁更强」时不要用本工具（那是现实足球问题）。
@@ -469,8 +500,8 @@ class WhleagueAdvisorPlugin(Star):
     @filter.llm_tool("whl_rules_lookup")
     async def whl_rules_lookup(self, event: AstrMessageEvent, **kwargs) -> str:
         """查 WHL 联赛规则：转会窗、挂牌价边界、出价与截止、激活、保护期、解约费、
-        违约金改价区间、训练营球员、能力档位、涨薪要求、工资口径、身价口径、交易税、
-        PlayStyle、消费券。
+        违约金（RC）改价区间、训练营球员、能力等级、球员要求（涨薪）、工资口径、估价口径、
+        交易税、PlayStyle、消费券。
 
         回答时逐字引用返回的规则原文（数字不要改写）；只引用与问题直接相关的规则，不要
         整节复述；规则库没有的主题要明确说没有。默认只给最相关的 1 条命中，用户明确

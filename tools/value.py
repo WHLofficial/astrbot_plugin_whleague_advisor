@@ -1,4 +1,4 @@
-"""whl_player_value：强度档位 + 参考成交区间，可带假设场景（设计 §5.5/§5.7）。
+"""whl_player_value：能力等级 + 市场参考价 + 可成交区间，可带假设场景（设计 §5.5/§5.7）。
 
 默认读 player_scores 基线（<1ms）；带 assumptions 时用同一 advice/ 纯函数现场
 重算该球员（不是 LLM 算），scenario=true、假设写进 caveats。
@@ -18,12 +18,12 @@ from .player import _WAGE_TEXT, _attrs_of, _baseline
 from .resolve import resolve_player
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
-PRESENTATION = "先给一句价格判断；只挑一个最突出的信号（RC/成交区间/工资/年龄）展开，其余一句带过；不要复述全部区间数字。"
+PRESENTATION = "先给一句价格判断；只挑一个最突出的信号（违约金、可成交区间、工资、年龄）展开，其余一句带过；不要复述全部区间数字。"
 _RC_TEXT = {
-    "rc_overpriced": "RC 高于市场",
-    "rc_suppressed": "RC 压价",
-    "rc_capped": "RC 封顶",
-    "rc_fair": "RC 不压价",
+    "rc_overpriced": "违约金（RC）高于市场参考价",
+    "rc_suppressed": "违约金（RC）压价",
+    "rc_capped": "违约金（RC）封顶",
+    "rc_fair": "违约金（RC）不压价",
 }
 
 
@@ -107,9 +107,9 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         fair_mid = (data.get("fair") or {}).get("mid")
         rc_value = (data.get("rc") or {}).get("value")
         name = data["player"].get("name")
-        summary = f"{name}：市场参考中位 {fair_mid:g}m" if fair_mid is not None else f"{name}：市场参考缺失"
+        summary = f"{name}：市场参考价中位 {fair_mid:g}m" if fair_mid is not None else f"{name}：市场参考价缺失"
         if rc_value is not None:
-            summary += f"，RC {rc_value:g}m。"
+            summary += f"，违约金（RC）{rc_value:g}m。"
         else:
             summary += "，无违约金。"
         if data.get("kind") == "trainee":
@@ -125,7 +125,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="任何情况下不说「官方身价」；区间是市场参考 + RC 约束下的可成交价",
+        hint="任何情况下不说「官方身价」；区间是市场参考价 + 违约金（RC）约束下的可成交区间；涉及激活/匹配窗时用 whl_transfer_match 查卖方匹配权",
     )
 
 

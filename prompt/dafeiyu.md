@@ -7,8 +7,9 @@
 
 ## 1. tools 白名单（persona 的 tools 字段）
 
-- **排除全部 8 个 `whl_*` 工具**（whl_league_brief / whl_team_brief / whl_player_lookup /
-  whl_market_board / whl_player_value / whl_compare_players / whl_match_lookup / whl_rules_lookup）。
+- **排除全部 9 个 `whl_*` 工具**（whl_league_brief / whl_team_brief / whl_player_lookup /
+  whl_market_board / whl_player_value / whl_transfer_match / whl_compare_players /
+  whl_match_lookup / whl_rules_lookup）。
   主模型能直接调 `whl_*` 的话，子 agent 方案就退化了（设计 §7.1 工具归属条）。
 - **保留** `transfer_to_whl_advisor` 与 `transfer_to_real_football_expert` 两个 handoff 工具
   （由本插件启动时动态注册）。

@@ -1,9 +1,9 @@
-"""强度档位与画像百分位（设计 §5.2）。
+"""能力等级与画像百分位（设计 §5.2）。
 
-档位复刻平台 abilityLevel（services.formula），画像/百分位复用 services.scores
+能力等级复刻平台 abilityLevel（services.formula），画像/百分位复用 services.scores
 的同一实现（基线预计算与工具回答必须同口径）。本模块只补两件工具层要用的：
 * full_percentiles：detail=true 时的完整百分位表（角色关键属性全集，不止 3 强 3 弱）；
-* level_label：档位 → 人话标签（回答里「第几档」用）。
+* level_label：能力等级 → 人话标签（回答里「第几级」用）。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from ..services.formula import PROFILE_ATTRS, ability_level, image_role
 from ..services.scores import compute_profile, percentile
 
-# 档位 → 人话（回答用，不做能力判断的输入）
+# 能力等级 → 人话（回答用，不做能力判断的输入）
 LEVEL_LABELS = {
     10: "T10 联赛顶级",
     9: "T9 顶级",
@@ -27,7 +27,7 @@ LEVEL_LABELS = {
 
 
 def strength_level(ca: float, pa: float, age: float) -> float:
-    """档位（1–10，0.5 步进）；age ≤ 25 取 CA/PA 档位均值（§5.2）。"""
+    """能力等级（1–10，0.5 步进）；age ≤ 25 取 CA/PA 等级均值（§5.2）。"""
     return ability_level(ca, pa, age)
 
 

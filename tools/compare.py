@@ -1,4 +1,4 @@
-"""whl_compare_players：两人强度/身价/合同对比，可带同一假设（设计 §5.5/§6）。
+"""whl_compare_players：两人能力/估价/合同对比，可带同一假设（设计 §5.5/§6）。
 
 一边不是球员 → NOT_A_PLAYER（§5.5）；跨位置只比位置内百分位（§4.7/§5.5）。
 """
@@ -16,7 +16,7 @@ from .resolve import resolve_player
 from .value import _merge_player
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
-PRESENTATION = "先给一句谁更强/谁更值；只挑一个最突出的对比维度（强度/价格/年龄/合同）展开，其余一句带过；不要逐项列数字。"
+PRESENTATION = "先给一句谁更强/谁更值；只挑一个最突出的对比维度（能力/估价/年龄/合同）展开，其余一句带过；不要逐项列数字。"
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
@@ -96,7 +96,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="两边都只吃本联赛 FC 数据（§4.8）；现实足球对比不走本工具",
+        hint="两边都只吃本联赛 FC 数据（§4.8）；现实足球对比不走本工具；涉及激活/匹配窗时用 whl_transfer_match 查卖方匹配权",
     )
 
 
@@ -129,17 +129,17 @@ def _compact_data(a, b, a_data, b_data, diff, same_role, scenario, assumptions) 
     else:
         age = "同龄"
     if rc.get("a") is None and rc.get("b") is None:
-        contract = "都无 RC"
+        contract = "都无违约金（RC）"
     elif rc.get("a") is None:
-        contract = "B 有 RC，A 无"
+        contract = "B 有违约金（RC），A 无"
     elif rc.get("b") is None:
-        contract = "A 有 RC，B 无"
+        contract = "A 有违约金（RC），B 无"
     elif rc["a"] < rc["b"]:
-        contract = "A RC 更低"
+        contract = "A 违约金（RC）更低"
     elif rc["b"] < rc["a"]:
-        contract = "B RC 更低"
+        contract = "B 违约金（RC）更低"
     else:
-        contract = "RC 相同"
+        contract = "违约金（RC）相同"
     return {
         "players": [_player_brief(a), _player_brief(b)],
         "facts": {

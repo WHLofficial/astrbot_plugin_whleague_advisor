@@ -403,7 +403,7 @@ async def resolve_team_arg(
             raise ToolError(
                 NOT_FOUND,
                 f"群里没找到「{person.lstrip('@')}」",
-                hint="确认群名片/昵称；如果他是某队教练，直接说队名",
+                hint="确认群名片/昵称；如果他是某队主教练，直接说队名",
             )
         if len(rows) > 1:
             raise ToolError(

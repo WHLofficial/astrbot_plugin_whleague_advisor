@@ -28,19 +28,21 @@ from . import market as market_tool
 from . import player as player_tool
 from . import rules as rules_tool
 from . import team as team_tool
+from . import transfer_match as transfer_match_tool
 from . import value as value_tool
 from .context import CallContext, ToolContext
 from .specs import SPECS, check_assumptions
 
 logger = logging.getLogger("whl.tools")
 
-# 8 个工具：name → (module, spec)
+# 9 个工具：name → (module, spec)
 TOOLS: dict[str, tuple[object, dict]] = {
     "whl_league_brief": (league_tool, SPECS["whl_league_brief"]),
     "whl_team_brief": (team_tool, SPECS["whl_team_brief"]),
     "whl_player_lookup": (player_tool, SPECS["whl_player_lookup"]),
     "whl_market_board": (market_tool, SPECS["whl_market_board"]),
     "whl_player_value": (value_tool, SPECS["whl_player_value"]),
+    "whl_transfer_match": (transfer_match_tool, SPECS["whl_transfer_match"]),
     "whl_compare_players": (compare_tool, SPECS["whl_compare_players"]),
     "whl_match_lookup": (match_tool, SPECS["whl_match_lookup"]),
     "whl_rules_lookup": (rules_tool, SPECS["whl_rules_lookup"]),

@@ -107,7 +107,7 @@ def test_dafeiyu_persona_whitelist_matches_design():
     assert re.search(r"剔除.*verify-realtime-info", text), "必须明确剔除 verify-realtime-info"
     assert "保留大肥鱼原有技能" in text or "保留原有技能" in text
     # tools：排除全部 whl_*（否则方案 B 退化成 C），保留两个 handoff
-    assert re.search(r"排除全部 8 个.*whl_\*", text), "必须明确排除 whl_* 工具"
+    assert re.search(r"排除全部 9 个.*whl_\*", text), "必须明确排除 whl_* 工具"
     assert "transfer_to_whl_advisor" in text and "transfer_to_real_football_expert" in text
     # 闲聊零工具调用（C01-C10 判定点）：整轮零工具、不转交
     assert "零工具调用" in text and "不转交任何子 agent" in text
@@ -135,11 +135,11 @@ def _tool_method_names():
     return _load_main().TOOL_METHOD_NAMES
 
 
-def test_build_specs_advisor_tools_are_exactly_whl_eight():
+def test_build_specs_advisor_tools_are_exactly_whl_nine():
     names = _tool_method_names()
     specs = subagents.build_specs(whl_tool_names=names)
     assert specs[0].name == "whl_advisor"
-    assert specs[0].tools == tuple(names) and len(specs[0].tools) == 8
+    assert specs[0].tools == tuple(names) and len(specs[0].tools) == 9
     assert "【WHL 联赛数据规则】" in specs[0].instructions
 
 

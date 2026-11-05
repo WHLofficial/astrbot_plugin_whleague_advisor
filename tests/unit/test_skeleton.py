@@ -153,7 +153,8 @@ def _import_main_as_package_submodule(monkeypatch):
 
 EXPECTED_LLM_TOOLS = (
     "whl_league_brief", "whl_team_brief", "whl_player_lookup", "whl_market_board",
-    "whl_player_value", "whl_compare_players", "whl_match_lookup", "whl_rules_lookup",
+    "whl_player_value", "whl_transfer_match", "whl_compare_players", "whl_match_lookup",
+    "whl_rules_lookup",
 )
 
 
@@ -161,7 +162,7 @@ def test_main_module_imports_as_package_submodule(fake_astrbot, monkeypatch):
     module = _import_main_as_package_submodule(monkeypatch)
     assert fake_astrbot["commands"] == [EXPECTED_COMMAND]
     assert hasattr(module, "WhleagueAdvisorPlugin")
-    # 阶段 4：8 个 whl_* 以 @filter.llm_tool 注册（主 agent 可见的前提）
+    # 阶段 4：9 个 whl_* 以 @filter.llm_tool 注册（主 agent 可见的前提）
     assert fake_astrbot["llm_tools"] == list(EXPECTED_LLM_TOOLS)
     assert fake_astrbot["event_message_type"], "群成员缓存刷新钩子应注册"
 
@@ -175,7 +176,7 @@ def test_metadata_yaml_parses_and_name_correct():
     assert metadata["name"] == EXPECTED_NAME
     for field in METADATA_REQUIRED_FIELDS:
         assert isinstance(metadata.get(field), str) and metadata[field].strip(), field
-    assert metadata["version"] == "0.5.0"
+    assert metadata["version"] == "0.6.0"
     assert metadata["support_platforms"] == ["aiocqhttp"]
     assert metadata["astrbot_version"] == ">=4,<5"
     assert metadata["repo"].startswith("https://github.com/")

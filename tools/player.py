@@ -1,6 +1,6 @@
 """whl_player_lookup：球员画像、合同、状态、所属队（设计 §6 / §4.7）。
 
-默认紧凑画像（档位 + 3 强 3 弱 + 合同/RC/工资），detail=true 才展开完整百分位。
+默认紧凑画像（能力等级 + 3 强 3 弱 + 合同/违约金（RC）/工资），detail=true 才展开完整百分位。
 请求名只在群成员命中 → NOT_A_PLAYER（I06），绝不偷换成球队查询。
 """
 
@@ -89,18 +89,18 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     if detail:
         summary = f"{name}：{club_name}，{data['player'].get('position') or '位置未知'}，{data['player'].get('age') or '?'} 岁"
         if ability.get("level") is not None:
-            summary += f"，档位 {ability['level']:g}（CA {ability.get('ca')}/PA {ability.get('pa')}）"
+            summary += f"，能力等级 {ability['level']:g}（CA（当前能力） {ability.get('ca')}/PA（潜力） {ability.get('pa')}）"
         contract = data["contract"]
-        rc_bit = f"，RC {contract['releaseFee']:g}m" if contract.get("releaseFee") else "，无违约金（自由身）"
+        rc_bit = f"，违约金（RC）{contract['releaseFee']:g}m" if contract.get("releaseFee") else "，无违约金（自由身）"
         wage_bit = f"，工资 {contract['wage']:g}m" if contract.get("wage") else ""
         summary += f"{rc_bit}{wage_bit}。"
         payload = data
     else:
         summary = f"{name}：{club_name}，{data['player'].get('position') or '位置未知'}，{data['player'].get('age') or '?'} 岁"
         if ability.get("level") is not None:
-            summary += f"，档位 {ability['level']:g}"
+            summary += f"，能力等级 {ability['level']:g}"
         rc = data["contract"].get("releaseFee")
-        summary += f"，RC {rc:g}m。" if rc else "，无违约金（自由身）。"
+        summary += f"，违约金（RC）{rc:g}m。" if rc else "，无违约金（自由身）。"
         payload = _compact_data(data)
     return ok_envelope(
         as_of=report["as_of"],
@@ -110,7 +110,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="问身价/可成交价用 whl_player_value；对比两人用 whl_compare_players",
+        hint="问估价/可成交区间用 whl_player_value；对比两人用 whl_compare_players；涉及激活/匹配窗用 whl_transfer_match",
     )
 
 

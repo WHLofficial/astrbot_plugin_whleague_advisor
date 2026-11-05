@@ -40,7 +40,7 @@ def round2(x: float) -> float:
     return math.floor(x * 100 + 0.5) / 100
 
 
-# ---- 强度档位（§5.2）----
+# ---- 能力等级（§5.2）----
 
 
 def rating_level(rating: float) -> int:
@@ -67,7 +67,7 @@ def rating_level(rating: float) -> int:
 
 
 def ability_level(ca: float, pa: float, age: float, young_blend_age: int = YOUNG_BLEND_AGE) -> float:
-    """能力等级：年龄 ≤ 成长年龄取 (CA 档 + PA 档)/2（0.5 步进），否则取 CA 档。"""
+    """能力等级：年龄 ≤ 成长年龄取 (CA 等级 + PA 等级)/2（0.5 步进），否则取 CA 等级。"""
     ca_level = rating_level(ca)
     if age <= young_blend_age:
         return (ca_level + rating_level(pa)) / 2
@@ -149,10 +149,10 @@ def listing_price_bounds(
     floor_value: float = 0.5,
     cap_rc: float = 1.5,
 ) -> tuple[int, int] | None:
-    """挂牌合法区间 [min, max]；market_value 生产全 NULL，传 None 即只用 RC 项。
+    """挂牌合法区间 [min, max]；market_value 生产全 NULL，传 None 即只用违约金（RC）项。
 
-    复刻 market-rules.ts:24-38：下限 = max(1, ceil(min(0.5RC, 0.5身价)))，
-    上限 = floor(round2(1.5RC))；下限 > 上限（RC 过低）返回 None（挂牌不可行）。
+    复刻 market-rules.ts:24-38：下限 = max(1, ceil(min(0.5×违约金（RC）, 0.5×平台身价（marketValue）)))，
+    上限 = floor(round2(1.5×违约金（RC）))；下限 > 上限（违约金（RC）过低）返回 None（挂牌不可行）。
     """
     if not (isinstance(release_fee, (int, float)) and math.isfinite(release_fee)) or release_fee <= 0:
         return None
