@@ -92,13 +92,31 @@ class TestMigrations:
         assert dao.get_schema_version(raw_conn) == 1
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert "players" not in names
-        assert migrations.run_migrations(raw_conn) == [2, 3]
+        assert migrations.run_migrations(raw_conn) == [2, 3, 4, 5]
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert {"players", "player_index", "player_attrs", "player_scores",
                 "model_params", "listings", "deals", "transfer_board"} <= names
         # 阶段 4：身份与工具层支撑表
         assert {"group_members", "name_translations", "team_aliases"} <= names
         assert dao.get_schema_version(raw_conn) == migrations.CURRENT_VERSION
+
+    def test_phase1_migration_adds_deal_snapshot_columns(self, raw_conn):
+        """4 号迁移给旧库 deals 补快照三列（model-refit-plan §3.2）；旧列不动。"""
+        migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:3])  # 到 3 号
+        cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(deals)")}
+        assert "player_level" not in cols
+        assert migrations.run_migrations(raw_conn) == [4, 5]
+        cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(deals)")}
+        assert {"player_level", "player_role", "snapshot_source"} <= cols
+
+    def test_phase2_migration_adds_model_gate_tables(self, raw_conn):
+        """5 号迁移给旧库补候选/历史表（model-refit-plan §4.4）；旧表不动。"""
+        migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:4])  # 到 4 号
+        names = {name for name, _sql in _schema_snapshot(raw_conn)}
+        assert "model_candidates" not in names
+        assert migrations.run_migrations(raw_conn) == [5]
+        names = {name for name, _sql in _schema_snapshot(raw_conn)}
+        assert {"model_candidates", "model_params_history"} <= names
 
     def test_migration_bodies_concatenate_to_full_schema(self, raw_conn):
         """累计 schema = 各迁移正文按版本号拼接：拼起来执行 ≡ run_migrations 产物。"""

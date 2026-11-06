@@ -27,10 +27,11 @@ _LAST_ERROR_PREFIX = "last_error:"
 
 _CPU_SUFFIX_RE = re.compile(r"\s*[（(]CPU[）)]\s*$")
 
-JOBS = ("season", "clubs", "players", "player_attrs", "market", "scores", "roster", "standings", "fixtures")
+JOBS = ("season", "clubs", "players", "player_attrs", "market", "deals_history", "scores", "roster", "standings", "fixtures")
 
-# 依赖顺序（设计 §4.2）：players → player_attrs 链式；market 先于 scores
-# （可比拟合的价格点来自挂牌/成交/广告板，首轮同步即可拟出真系数）；roster 独立。
+# 依赖顺序（设计 §4.2）：players → player_attrs 链式；market 先于 deals_history（回填
+# 只 upsert，热同步最新 50 条先落库）；deals_history 先于 scores（comp 拟合只认 deals
+# 真实成交，Phase 1 起 listing/board 只展示不进回归）；roster 独立。
 JOBS_DEFAULT_ORDER = JOBS
 
 
@@ -400,6 +401,37 @@ def upsert_player_attrs(conn: sqlite3.Connection, rows: list[dict], fetched_at: 
         )
 
 
+_DEALS_CONTENT_COLUMNS = (
+    "player_id", "player_name", "from_club_id", "from_club_name",
+    "to_club_id", "to_club_name", "fee", "extra_fee", "type", "season",
+    "window_seq", "completed_at", "player_level", "player_role", "snapshot_source",
+)
+
+
+def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) -> int:
+    """deals 按 id upsert，只增改不删（model-refit-plan §2 原则 4 / §5.3）。
+
+    热同步每 5 分钟重放最近 50 条、历史回填按页补旧行，DELETE 会把翻页窗口外
+    的成交冲掉——所以 deals 不整表替换。关键细节：内容未变的行**不碰 updated_at**
+    （ON CONFLICT 的 DO UPDATE 带 WHERE 内容比对，任一内容列与现值不同才更新）。
+    否则 market 每轮都把 updated_at 刷成 now，model_gate.data_fingerprint 的
+    (id, fee, type, updated_at) 指纹会轮轮变化，「指纹没变不生成新候选」（决策 19）
+    就失效了。反向保证：fee 修正 / 快照回填等任何内容变化都会推进该行 updated_at，
+    指纹随之变化。返回处理行数。
+    """
+    columns = ("id", *_DEALS_CONTENT_COLUMNS)
+    placeholders = ", ".join("?" for _ in range(len(columns) + 1))
+    assignments = ", ".join(f"{c} = excluded.{c}" for c in (*columns[1:], "updated_at"))
+    content_check = " OR ".join(f"deals.{c} IS NOT excluded.{c}" for c in _DEALS_CONTENT_COLUMNS)
+    sql = (
+        f"INSERT INTO deals ({', '.join(columns)}, updated_at) VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {assignments} WHERE {content_check}"
+    )
+    for row in rows:
+        conn.execute(sql, (*[row.get(c) for c in columns], updated_at))
+    return len(rows)
+
+
 def replace_market(
     conn: sqlite3.Connection,
     listings: list[dict],
@@ -407,7 +439,9 @@ def replace_market(
     board: list[dict],
     updated_at: str,
 ) -> None:
-    """市场三表整表替换（同一事务内调用）：上游返回即真相，本地不自行结算。"""
+    """市场三表写入（同一事务内调用）：listings/board 整表替换（上游返回即真相），
+    deals 只 upsert 不删（历史回填的旧行不在最近 50 条里，DELETE 会丢历史，§5.3）。
+    """
     conn.execute("DELETE FROM listings")
     for row in listings:
         conn.execute(
@@ -421,20 +455,7 @@ def replace_market(
                 row.get("status"), row.get("listed_at"), updated_at,
             ),
         )
-    conn.execute("DELETE FROM deals")
-    for row in deals:
-        conn.execute(
-            "INSERT INTO deals (id, player_id, player_name, from_club_id, from_club_name, "
-            "to_club_id, to_club_name, fee, extra_fee, type, season, window_seq, completed_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                row["id"], row.get("player_id"), row.get("player_name"),
-                row.get("from_club_id"), row.get("from_club_name"),
-                row.get("to_club_id"), row.get("to_club_name"),
-                row.get("fee"), row.get("extra_fee"), row.get("type"),
-                row.get("season"), row.get("window_seq"), row.get("completed_at"), updated_at,
-            ),
-        )
+    upsert_deals(conn, deals, updated_at)
     conn.execute("DELETE FROM transfer_board")
     for row in board:
         conn.execute(
@@ -511,6 +532,170 @@ def replace_player_scores(conn: sqlite3.Connection, rows: list[dict], as_of: str
         )
 
 
+# ---- 模型门禁：候选 / 历史（model-refit-plan §4.4）----
+
+MODEL_CANDIDATE_KEEP = 5  # model_candidates 保留最近 N 条（§4.4）
+
+_CANDIDATE_JSON_COLS = ("params_json", "report_json", "gate_json")
+
+
+def _candidate_row_to_dict(row: sqlite3.Row) -> dict:
+    item = dict(row)
+    for col in _CANDIDATE_JSON_COLS:
+        raw = item.pop(col, None)
+        try:
+            item[col.removesuffix("_json")] = json.loads(raw) if raw else None
+        except ValueError:
+            item[col.removesuffix("_json")] = None
+    return item
+
+
+def record_model_candidate(
+    conn: sqlite3.Connection,
+    *,
+    version: str,
+    created_at: str,
+    data_fingerprint: str,
+    status: str,
+    params: dict | None = None,
+    report: dict | None = None,
+    gate: dict | None = None,
+) -> int:
+    """插入一条候选并裁剪到最近 MODEL_CANDIDATE_KEEP 条（同一事务内调用）。
+
+    version 全局唯一（known_model_versions 计算下一版本号时已含候选/历史表）。
+    """
+    cur = conn.execute(
+        "INSERT INTO model_candidates (version, created_at, data_fingerprint, "
+        "params_json, report_json, gate_json, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            version, created_at, data_fingerprint,
+            json.dumps(params, ensure_ascii=False, sort_keys=True) if params is not None else None,
+            json.dumps(report, ensure_ascii=False, sort_keys=True) if report is not None else None,
+            json.dumps(gate, ensure_ascii=False, sort_keys=True) if gate is not None else None,
+            status,
+        ),
+    )
+    conn.execute(
+        "DELETE FROM model_candidates WHERE id NOT IN "
+        f"(SELECT id FROM model_candidates ORDER BY id DESC LIMIT {int(MODEL_CANDIDATE_KEEP)})"
+    )
+    return int(cur.lastrowid)
+
+
+def set_model_candidate_status(conn: sqlite3.Connection, candidate_id: int, status: str) -> None:
+    conn.execute(
+        "UPDATE model_candidates SET status = ? WHERE id = ?", (status, candidate_id)
+    )
+
+
+def _candidate_by_sql(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> dict | None:
+    row = conn.execute(sql, args).fetchone()
+    return _candidate_row_to_dict(row) if row else None
+
+
+def latest_model_candidate(conn: sqlite3.Connection) -> dict | None:
+    return _candidate_by_sql(
+        conn, "SELECT * FROM model_candidates ORDER BY id DESC LIMIT 1"
+    )
+
+
+def get_model_candidate_by_version(conn: sqlite3.Connection, version: str) -> dict | None:
+    return _candidate_by_sql(
+        conn, "SELECT * FROM model_candidates WHERE version = ?", (version,)
+    )
+
+
+def find_model_candidate_by_fingerprint(conn: sqlite3.Connection, fingerprint: str) -> dict | None:
+    """同数据指纹的历史候选（§4.4/决策 19：指纹没变不生成新候选）。"""
+    return _candidate_by_sql(
+        conn, "SELECT * FROM model_candidates WHERE data_fingerprint = ? "
+              "ORDER BY id DESC LIMIT 1",
+        (fingerprint,),
+    )
+
+
+def recent_model_candidates(conn: sqlite3.Connection, limit: int = 3) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM model_candidates ORDER BY id DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    return [_candidate_row_to_dict(r) for r in rows]
+
+
+def all_model_candidate_versions(conn: sqlite3.Connection) -> list[str]:
+    return [
+        r["version"]
+        for r in conn.execute("SELECT version FROM model_candidates").fetchall()
+    ]
+
+
+def archive_model_params(conn: sqlite3.Connection, archived_at: str) -> int:
+    """把当前 model_params 全部行归档进 model_params_history（先清旧归档——只留上一版）。
+
+    发布新模型前调用 → history = 被替换下的版本；回滚前调用 → history = 被回滚掉的
+    版本（再回滚一次可回返，来回皆可）。返回归档行数。
+    """
+    conn.execute("DELETE FROM model_params_history")
+    rows = conn.execute(
+        "SELECT key, value_json, n, r2, trained_at, version FROM model_params"
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            "INSERT INTO model_params_history (key, value_json, n, r2, trained_at, "
+            "version, role_stats_json, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["key"], row["value_json"], row["n"], row["r2"], row["trained_at"],
+                row["version"], _comp_role_stats_meta(conn) if row["key"] == "comp" else None,
+                archived_at,
+            ),
+        )
+    return len(rows)
+
+
+def _comp_role_stats_meta(conn: sqlite3.Connection) -> str | None:
+    """meta.model_role_stats_json 的当前值（归档 comp 行时随行保存）。"""
+    return get_meta(conn, "model_role_stats_json")
+
+
+def read_model_params_history(conn: sqlite3.Connection) -> dict[str, dict]:
+    """上一版已发布模型：key → read_model_params 同形状 + role_stats（comp 行）。"""
+    rows = conn.execute(
+        "SELECT key, value_json, n, r2, trained_at, version, role_stats_json "
+        "FROM model_params_history"
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for row in rows:
+        item = {
+            "key": row["key"],
+            "value": json.loads(row["value_json"]),
+            "n": row["n"],
+            "r2": row["r2"],
+            "trained_at": row["trained_at"],
+            "version": row["version"],
+        }
+        if row["role_stats_json"]:
+            try:
+                item["role_stats"] = json.loads(row["role_stats_json"])
+            except ValueError:
+                item["role_stats"] = None
+        out[row["key"]] = item
+    return out
+
+
+def known_model_versions(conn: sqlite3.Connection) -> list[str]:
+    """全库已知版本号（model_params + 候选 + 历史）：next_model_version 的输入，
+    保证候选/发布/回滚交错时版本号仍唯一递增（§4.4 候选版本号必须唯一）。"""
+    versions = [
+        r["version"] for r in conn.execute("SELECT version FROM model_params").fetchall()
+    ]
+    versions.extend(all_model_candidate_versions(conn))
+    versions.extend(
+        r["version"]
+        for r in conn.execute("SELECT DISTINCT version FROM model_params_history").fetchall()
+    )
+    return versions
+
+
 # ---- 阶段 3：查询（阶段 4 工具层直接消费）----
 
 
@@ -585,9 +770,13 @@ def read_deals(
     *,
     player_id: int | None = None,
     types: tuple[str, ...] | None = None,
-    limit: int = 50,
+    limit: int | None = 50,
 ) -> list[dict]:
-    """成交查询；types 过滤（可比锚只认 forced_auction / activation，设计 §4.3）。"""
+    """成交查询；types 过滤（可比锚认 transfer / activation / forced_auction，model-refit-plan §3.1）。
+
+    limit=None 不加 LIMIT（拟合侧全量读取：§5.3 历史全保留 + 时间衰减在拟合侧算，
+    不能让 promotion/demote 等噪声行挤占窗口截断老赛季真实成交）。
+    """
     clauses, args = [], []
     if player_id is not None:
         clauses.append("player_id = ?")
@@ -596,9 +785,11 @@ def read_deals(
         clauses.append(f"type IN ({', '.join('?' for _ in types)})")
         args.extend(types)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = conn.execute(
-        f"SELECT * FROM deals {where} ORDER BY completed_at DESC, id DESC LIMIT ?", (*args, limit)
-    ).fetchall()
+    sql = f"SELECT * FROM deals {where} ORDER BY completed_at DESC, id DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
+    rows = conn.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -679,6 +870,34 @@ def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
+MODEL_META_KEYS = (
+    "model_status", "model_publish_mode", "model_manual_approvals",
+    "model_reject_streak", "model_reject_reason", "model_candidate_at",
+)
+
+
+def collect_model_status(conn: sqlite3.Connection) -> dict:
+    """whl状态 的模型门禁节（model-refit-plan §4.2/§4.5）：meta 状态 + 最新候选 + 最近 3 次。"""
+    meta = get_all_meta(conn)
+
+    def _int(key: str) -> int:
+        try:
+            return int(meta.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "status": meta.get("model_status"),
+        "publish_mode": meta.get("model_publish_mode") or "manual",
+        "manual_approvals": _int("model_manual_approvals"),
+        "reject_streak": _int("model_reject_streak"),
+        "reject_reason": meta.get("model_reject_reason"),
+        "candidate_at": meta.get("model_candidate_at"),
+        "latest": latest_model_candidate(conn),
+        "recent": recent_model_candidates(conn, limit=3),
+    }
+
+
 def collect_status_snapshot(conn: sqlite3.Connection) -> dict:
     """whl状态 用的只读快照（设计 §8.1：最后同步时间、行数、stale 标记、最近错误）。"""
 
@@ -707,6 +926,7 @@ def collect_status_snapshot(conn: sqlite3.Connection) -> dict:
         "last_errors": last_errors,
         "last_runs": last_runs,
         "counts": table_counts(conn),
+        "model": collect_model_status(conn),
     }
 
 

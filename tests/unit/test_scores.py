@@ -6,6 +6,7 @@ whl_player_value 的 data 一字不差；model_params 恒带 n / r2 / version。
 系数用设计文档化默认值（COMP/WAGE_DEFAULT_PARAMS），容差 ±0.05（市场日漂移不计）。
 """
 
+import json
 import re
 import sqlite3
 
@@ -333,6 +334,466 @@ class TestShapeLock:
         assert data["deal"] is None
 
 
+# ---- Phase 1 数据源：真实成交进回归（model-refit-plan §3.1–§3.4）----
+
+
+def _mk_players(n: int, **kw) -> list[dict]:
+    # 位置轮换覆盖 CB/FB/MF/FW 四组，避免全同角色哑变量列与截距共线
+    positions = ("CB", "RB", "CM", "ST")
+    return [
+        player(id=1000 + i, fc_id=2000 + i, position=positions[i % 4], age=25, ca=76 + i, pa=76 + i)
+        for i in range(n)
+    ]
+
+
+def _deal(i: int, type_: str, fee: float, *, player_id=None, season=9, **extra) -> dict:
+    row = {
+        "id": 500 + i, "player_id": player_id if player_id is not None else 1000 + i,
+        "player_name": None, "from_club_id": None, "from_club_name": None,
+        "to_club_id": None, "to_club_name": None, "fee": fee, "extra_fee": None,
+        "type": type_, "season": season, "window_seq": 2,
+        "completed_at": "2026-11-04T12:00:00+00:00",
+        "player_level": None, "player_role": None, "snapshot_source": None,
+    }
+    row.update(extra)
+    return row
+
+
+class TestTransactionSource:
+    """可比回归只认 deals 的 fee；listings/board 只展示不进回归（§3.1）。"""
+
+    def test_comp_deal_types_constant(self):
+        assert scores.COMP_DEAL_TYPES == ("transfer", "activation", "forced_auction")
+
+    def _ten_deals(self) -> list[dict]:
+        types = ["transfer"] * 4 + ["activation"] * 3 + ["forced_auction"] * 3
+        return [_deal(i, types[i], 10.0 + i) for i in range(10)]
+
+    def test_transaction_only_listings_board_not_in_regression(self):
+        """挂牌/广告板照常产出 ask 点，但 comp 拟合 n 只等于成交点数。"""
+        players = _mk_players(10)
+        deals = self._ten_deals()
+        # 同一批球员挂天价挂牌 + 天价广告板：若混进回归，n 与系数都会变
+        listings = [
+            {"player_id": 1000 + i, "status": "listed", "ask_price": 9000.0 + i, "type": "normal"}
+            for i in range(10)
+        ]
+        board = [
+            {"player_id": 1000 + i, "list_price": 8000.0 + i} for i in range(10)
+        ]
+        model, _rows = scores.fit_model_context(
+            players, {}, listings, deals, board, version="v", trained_at="t",
+        )
+        assert model.comp_source == "fit"
+        assert model.comp_source_counts == {"transfer": 4, "activation": 3, "forced_auction": 3}
+        assert sum(model.comp_source_counts.values()) == 10
+
+        # ask 点函数本身仍产出 listing/board 点（展示路径接缝），但来源标记不同
+        ask_points = scores.extract_ask_points(players, listings, board)
+        assert {p["source"] for p in ask_points} == {"listing", "board"}
+
+    def test_free_agent_and_other_types_excluded(self):
+        players = _mk_players(3)
+        deals = [
+            _deal(0, "free_agent", 12.0, player_id=1000),
+            _deal(1, "termination", 0, player_id=1001),
+            _deal(2, "promotion", 3.0, player_id=1002),
+            _deal(3, "demote", 3.0, player_id=1000),
+            _deal(4, "rc_change", 3.0, player_id=1001),
+            _deal(5, "match", 3.0, player_id=1002),
+        ]
+        points, _caveats = scores.extract_transaction_points(players, deals)
+        assert points == []
+
+    def test_trainee_excluded(self):
+        players = _mk_players(10)
+        deals = self._ten_deals()
+        players[0] = {**players[0], "status": "trainee"}
+        points, _ = scores.extract_transaction_points(players, deals)
+        assert len(points) == 9
+        assert all(p["player_id"] != players[0]["id"] for p in points)
+
+    def test_fee_only_extra_fee_never_used(self):
+        """价格只认 fee；extra_fee 是审核销毁附加费，不是成交价（决策 15）。"""
+        players = _mk_players(1)
+        points, _ = scores.extract_transaction_points(
+            players, [_deal(0, "transfer", 7.0, extra_fee=250.0)]
+        )
+        assert len(points) == 1 and points[0]["price"] == 7.0
+        # fee 缺失/为 0 时即使 extra_fee 巨大也不产生点
+        for fee in (None, 0):
+            points, _ = scores.extract_transaction_points(
+                players, [_deal(1, "transfer", fee, extra_fee=250.0)]
+            )
+            assert points == []
+
+    def test_uncomputable_level_excluded(self):
+        players = _mk_players(2) + [player(id=9999, fc_id=9999, ca=None, age=None)]
+        deals = [
+            _deal(0, "transfer", 9.0, player_id=1000),
+            _deal(1, "transfer", 9.0, player_id=9999),
+        ]
+        points, _ = scores.extract_transaction_points(players, deals)
+        assert [p["player_id"] for p in points] == [1000]
+
+    def test_snapshot_fields_preferred_no_caveat(self):
+        """成交快照优先，且球员已不在 players 表也能成点；不记回退 caveat（§3.2）。"""
+        deals = [_deal(0, "transfer", 12.0, player_id=777,
+                       player_level=8.0, player_role="MF", snapshot_source="deal_time")]
+        points, caveats = scores.extract_transaction_points([], deals)
+        assert len(points) == 1
+        assert points[0]["level"] == 8.0 and points[0]["role_group"] == "MF"
+        assert points[0]["snapshot_source"] == "deal_time"
+        assert caveats == []
+
+    def test_missing_snapshot_falls_back_and_records_caveat(self):
+        """快照缺失回退当前 player 数据并记 caveat（Phase 3 前的过渡口径，§3.2）。"""
+        players = _mk_players(1)
+        points, caveats = scores.extract_transaction_points(
+            players, [_deal(0, "activation", 21.0)]
+        )
+        assert len(points) == 1
+        assert points[0]["snapshot_source"] is None
+        assert len(caveats) == 1 and "current_backfill" in caveats[0]
+
+    def test_production_shaped_11_points(self):
+        """§3.4 同构验收：4 transfer（含 1 trainee 剔除）+ 5 activation + 3 forced_auction
+        → comp 点正好 11 个。生产快照核对见 PhaseOutcome（本地无生产库，未直跑）。"""
+        players = _mk_players(13)
+        players[11] = {**players[11], "status": "trainee"}  # id 1011
+        deals = (
+            [_deal(i, "transfer", 10 + i, player_id=1000 + i) for i in range(4)]
+            + [_deal(10 + i, "activation", 20 + i, player_id=1004 + i) for i in range(5)]
+            + [_deal(20, "forced_auction", 30, player_id=1009),
+               _deal(21, "forced_auction", 31, player_id=1010),
+               _deal(22, "forced_auction", 32, player_id=1012)]
+        )
+        # 4 笔 transfer 的第 4 笔落在 trainee（1011）身上 → 剔除
+        deals[3]["player_id"] = 1011
+        points, _ = scores.extract_transaction_points(players, deals)
+        assert len(points) == 11
+        assert {p["source"] for p in points} <= set(scores.COMP_DEAL_TYPES)
+
+
+    def test_trainee_excluded_even_with_snapshot(self):
+        """trainee 无条件剔除（§3.1）：快照在场也不进成年曲线回归（独立评审 2）。"""
+        players = _mk_players(1)
+        players[0] = {**players[0], "status": "trainee"}
+        deals = [_deal(0, "activation", 5.0, player_level=4.0, player_role="FW",
+                       snapshot_source="deal_time")]
+        points, caveats = scores.extract_transaction_points(players, deals)
+        assert points == [] and caveats == []
+
+    def test_snapshot_role_normalization(self):
+        """快照 role：位置组恒等（CB/FB/MF/FW/GK），原始位置过 role_group 归一（评审 4）。"""
+        deals = [
+            _deal(0, "transfer", 12.0, player_id=777, player_level=8.0, player_role="ST"),
+            _deal(1, "transfer", 13.0, player_id=778, player_level=7.0, player_role="CB"),
+            _deal(2, "transfer", 14.0, player_id=779, player_level=7.5, player_role="GK"),
+        ]
+        points, caveats = scores.extract_transaction_points([], deals)
+        assert [p["role_group"] for p in points] == ["FW", "CB", "GK"]
+        assert caveats == []
+
+    def test_snapshot_role_unknown_records_caveat(self):
+        """快照 role 两者都归一不出：保留原值（拟合侧剔除）并记 caveat。"""
+        deals = [_deal(0, "transfer", 12.0, player_id=777, player_level=8.0, player_role="守门")]
+        points, caveats = scores.extract_transaction_points([], deals)
+        assert points[0]["role_group"] == "守门"
+        assert len(caveats) == 1 and "无法识别" in caveats[0]
+
+    def test_rejected_path_counts_share_fit_eligible_scope(self):
+        """拒绝路径（comp 回退默认参数）的计数与成功路径同口径：GK 点不计入（评审 3）。"""
+        players = _mk_players(7)
+        deals = [_deal(i, "transfer", 10.0 + i) for i in range(7)]
+        deals.append(_deal(90, "transfer", 5.0, player_id=9999,
+                           player_level=6.0, player_role="GK"))
+        model, _rows = scores.fit_model_context(players, {}, [], deals, [], version="v", trained_at="t")
+        assert model.comp_source == "default"
+        assert model.comp_source_counts == {"transfer": 7}
+        assert model.comp_rejected_reason == "insufficient_transaction_points:n=7"
+
+
+class TestPublishGate:
+    """Phase 2 发布门禁（_sync_scores）：候选 + 门禁 + manual 等待 / 拒绝不写库。"""
+
+    def _synced(self, all_routes):
+        import asyncio
+
+        from conftest import FixtureTransport
+
+        conn = mem_conn()
+        ctx = jobs_mod.SyncContext(
+            conn=conn,
+            club=import_plugin("sources.club").ClubSource(
+                "https://club.invalid", transport=FixtureTransport(all_routes)
+            ),
+            tour=None,
+        )
+        asyncio.run(jobs_mod.run_full_sync(ctx))
+        return conn, ctx
+
+    def test_gate_rejects_below_threshold_and_keeps_previous(self, all_routes):
+        """11 点（生产同构）：候选 shadow、model_params/player_scores 原样、meta 记拒绝。"""
+        import asyncio
+
+        from conftest import seed_transaction_deals
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            dao.upsert_model_params(
+                conn, "comp", {"a": -7.1, "b": 4.8, "fb": 0.5, "mf": 0.4, "fw": 0.0, "fallback": True},
+                n=18, r2=0.705674, trained_at="2026-11-05T14:00:00+00:00", version="2026-11-05.14",
+            )
+            assert seed_transaction_deals(conn, n=11) == 11
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0
+            comp = dao.read_model_params(conn, "comp")
+            assert comp["version"] == "2026-11-05.14"  # 上一版未被覆盖
+            assert conn.execute("SELECT COUNT(*) n FROM player_scores").fetchone()["n"] == 0
+            assert dao.get_meta(conn, "model_status") == "degraded"
+            assert dao.get_meta(conn, "model_reject_reason").startswith(
+                "insufficient_transaction_points:n=11"
+            )
+            # full_sync 阶段 fixture 成交点 0 已拒绝一次（streak=1），本次是第 2 连击
+            assert dao.get_meta(conn, "model_reject_streak") == "2"
+            # 决策 2/13：任何拒绝把模式退回 manual、人工计数清零（独立评审 1）
+            assert dao.get_meta(conn, "model_publish_mode") == "manual"
+            assert dao.get_meta(conn, "model_manual_approvals") == "0"
+            candidate = json.loads(dao.get_meta(conn, "model_candidate_json"))
+            assert candidate["status"] == "shadow" and candidate["n"] == 11
+            row = dao.latest_model_candidate(conn)
+            assert row["status"] == "shadow"
+            assert (row["gate"] or {})["reasons"][0].startswith("insufficient_transaction_points")
+        finally:
+            conn.close()
+
+    def test_gate_pass_generates_candidate_waiting_manual(self, all_routes):
+        """23 点过门禁 + manual 模式：候选 passed 等人工，不直接写 model_params。"""
+        import asyncio
+
+        from conftest import seed_transaction_deals
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            seed_transaction_deals(conn)  # 23 笔，门禁友好数据
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0  # 未发布
+            comp = dao.read_model_params(conn, "comp")
+            assert comp is None  # manual：不写库
+            assert conn.execute("SELECT COUNT(*) n FROM player_scores").fetchone()["n"] == 0
+            candidate = dao.latest_model_candidate(conn)
+            assert candidate["status"] == "passed"
+            assert candidate["params"]["comp_n"] == 23
+            assert (candidate["gate"] or {})["passed"] is True
+            # §4.3：manual 等人工阶段不动 model_status/reject_reason（清空只发生在发布时）
+            assert dao.get_meta(conn, "model_status") == "degraded"  # full_sync 的 n=0 拒绝遗留
+        finally:
+            conn.close()
+
+    def test_approve_publishes_candidate_atomically(self, all_routes):
+        """whl模型通过：候选 approved、model_params/player_scores 落库、meta ok、streak 清零。"""
+        import asyncio
+
+        from conftest import publish_pending_model, seed_transaction_deals
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            dao.set_meta(conn, "model_status", "degraded", "t")
+            dao.set_meta(conn, "model_reject_streak", "2", "t")
+            dao.set_meta(conn, "model_reject_reason", "insufficient_transaction_points:n=11<20", "t")
+            seed_transaction_deals(conn)
+            asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            reply = publish_pending_model(conn)
+            assert "已通过并发布" in reply
+            comp = dao.read_model_params(conn, "comp")
+            assert comp is not None and comp["n"] == 23
+            assert comp["value"]["fallback"] is False
+            assert dao.read_model_params(conn, "wage") is not None
+            assert conn.execute("SELECT COUNT(*) n FROM player_scores").fetchone()["n"] == 11
+            assert dao.get_meta(conn, "model_status") == "ok"
+            assert dao.get_meta(conn, "model_reject_reason") is None
+            assert dao.get_meta(conn, "model_reject_streak") == "0"
+            assert dao.get_meta(conn, "model_manual_approvals") == "1"
+            assert dao.get_meta(conn, "model_publish_mode") == "manual"  # 第 1 次
+            assert dao.latest_model_candidate(conn)["status"] == "approved"
+            # 上一版已归档：首次发布前 model_params 只有独立发布的 wage 行
+            #（评审 finding 3：拒绝路径已发布 wage），comp 是首次发布
+            history = dao.read_model_params_history(conn)
+            assert set(history) == {"wage"}
+        finally:
+            conn.close()
+
+    def test_second_approval_switches_to_auto(self, all_routes):
+        """连续两次人工通过 → model_publish_mode 转 auto（决策 13）。"""
+        import asyncio
+
+        from conftest import publish_pending_model, seed_transaction_deals
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            seed_transaction_deals(conn)
+            asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            publish_pending_model(conn)
+            # 改动一笔成交生成新指纹 → 新候选（版本号必须递增不撞）
+            conn.execute("UPDATE deals SET fee = fee + 1 WHERE id = 900000")
+            asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            candidate = dao.latest_model_candidate(conn)
+            assert candidate["version"] != dao.read_model_params(conn, "comp")["version"]
+            reply = publish_pending_model(conn)
+            assert "auto" in reply
+            assert dao.get_meta(conn, "model_publish_mode") == "auto"
+            assert dao.get_meta(conn, "model_manual_approvals") == "2"
+            # 独立评审 1：auto 模式下门禁拒绝必须退回 manual、计数清零
+            # （否则拒绝连击期间下一个过门禁候选会跳过人工闸直接自动发布）
+            conn.execute("DELETE FROM deals WHERE id >= 900000 AND id % 2 = 1")  # 点数跌到 ~12
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0
+            assert dao.get_meta(conn, "model_publish_mode") == "manual"
+            assert dao.get_meta(conn, "model_manual_approvals") == "0"
+            assert dao.get_meta(conn, "model_status") in ("degraded", "degraded_3x")
+        finally:
+            conn.close()
+
+    def test_fingerprint_unchanged_skips_candidate(self, all_routes):
+        """决策 19：deals 指纹没变 → 不生成新候选、不动旧候选。"""
+        import asyncio
+
+        from conftest import seed_transaction_deals
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            seed_transaction_deals(conn)
+            asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            first = dao.latest_model_candidate(conn)
+            assert first is not None
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0
+            assert dao.latest_model_candidate(conn)["id"] == first["id"]  # 没有新候选
+        finally:
+            conn.close()
+
+    def test_wage_publishes_independently_of_comp_gate(self, all_routes):
+        """评审 finding 3：指纹 skip 与拒绝路径 wage 都独立重拟合并发布，
+        comp 门禁/候选流程不冻结工资曲线（§4.1「wage 沿用现有门禁」）。"""
+        import asyncio
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            # full_sync 的 scores（0 comp 点，shadow 拒绝路径）已发布 wage
+            first = dao.read_model_params(conn, "wage")
+            assert first is not None
+            # 指纹不变路径：只改球员工资（deals 不变）→ 无新候选，wage 单独跟进
+            conn.execute("UPDATE players SET wage = wage * 2 WHERE active = 1 AND wage IS NOT NULL")
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0
+            second = dao.read_model_params(conn, "wage")
+            assert second["value"] != first["value"]
+            # 拒绝路径：新增一笔三类成交造新指纹 + 再改工资 → 候选照拒，wage 照发
+            conn.execute("UPDATE players SET wage = wage * 2 WHERE active = 1 AND wage IS NOT NULL")
+            conn.execute(
+                "INSERT INTO deals (id, player_id, player_name, fee, type, season, window_seq, "
+                "completed_at, updated_at) VALUES (998002, 7, 'X', 3.0, 'transfer', 9, 2, "
+                "'2026-11-01T00:00:00+00:00', 't')"
+            )
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0
+            assert dao.get_meta(conn, "model_status") in ("degraded", "degraded_3x")
+            third = dao.read_model_params(conn, "wage")
+            assert third["value"] != second["value"]
+            # 输入没再变：指纹不变 → skip，wage 不空转版本号
+            stamp = third["trained_at"]
+            asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert dao.read_model_params(conn, "wage")["trained_at"] == stamp
+        finally:
+            conn.close()
+
+    def test_three_rejections_mark_degraded_3x(self, all_routes):
+        """连续 3 次拒绝 → model_status=degraded_3x（决策 20，不自动切默认）。"""
+        import asyncio
+
+        from conftest import FixtureTransport, seed_transaction_deals
+
+        conn, ctx = self._synced(all_routes)
+        try:
+            for round_ in range(3):
+                seed_transaction_deals(conn, n=11)
+                # 每轮改 fee 造新指纹（fee 与 level 无关的 11 点必然被拒）
+                conn.execute(
+                    "UPDATE deals SET fee = fee + ? WHERE id >= 900000", (round_ + 1,)
+                )
+                outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+                assert outcome.status == "ok" and outcome.rows == 0
+            # full_sync 阶段 n=0 已是第 1 连击，3 轮后共 4
+            assert dao.get_meta(conn, "model_reject_streak") == "4"
+            assert dao.get_meta(conn, "model_status") == "degraded_3x"
+            comp = dao.read_model_params(conn, "comp")
+            assert comp is None  # 仍未写库（无持久化时保持空，工具走默认参数）
+        finally:
+            conn.close()
+
+
+class TestTimeDecay:
+    """时间衰减权重 0.5^(赛季龄/3)，锚点当前赛季（§3.1）。"""
+
+    def test_decay_weight_formula(self):
+        assert scores.decay_weight(12, 12) == pytest.approx(1.0)
+        assert scores.decay_weight(9, 12) == pytest.approx(0.5)
+        assert scores.decay_weight(6, 12) == pytest.approx(0.25)
+        assert scores.decay_weight(None, 12) == 1.0  # 旧接口无 season：不猜衰减
+        assert scores.decay_weight(12, None) == 1.0  # 无锚点赛季：不衰减
+        assert scores.decay_weight(13, 12) == 1.0  # 脏数据未来赛季不放大
+
+    def test_points_carry_weights_and_season_report(self):
+        players = _mk_players(8)
+        seasons = [12, 11, 9, 6, 12, 11, 9, 6]
+        deals = [_deal(i, "transfer", 10.0 + i, season=s) for i, s in enumerate(seasons)]
+        points, _ = scores.extract_transaction_points(players, deals, current_season=12)
+        assert [p["weight"] for p in points] == pytest.approx(
+            [0.5 ** (max(0, 12 - s) / 3) for s in seasons]
+        )
+        assert points[0]["weight"] == pytest.approx(1.0)          # 当季
+        assert points[2]["weight"] == pytest.approx(0.5)          # 龄 3 赛季 = 半衰期
+        assert points[3]["weight"] == pytest.approx(0.25)         # 龄 6 赛季 = 两个半衰期
+        model, _rows = scores.fit_model_context(
+            players, {}, [], deals, [], version="v", trained_at="t", current_season=12,
+        )
+        assert model.comp_source == "fit"
+        assert model.comp_season_counts == {12: 2, 11: 2, 9: 2, 6: 2}
+        assert model.comp_source_counts == {"transfer": 8}
+
+    def test_fit_comp_uses_weights(self):
+        """时间衰减改变拟合：旧赛季的虚高点被降权，锚定后截距低于无衰减。"""
+        players = _mk_players(12)
+        levels = [5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 8, 8]  # ca 76..87 @ age 25
+        price = {lv: 2.0 ** lv for lv in set(levels)}
+        recent = [_deal(i, "transfer", price[levels[i]], season=12) for i in range(8)]
+        old_inflated = [
+            _deal(8 + i, "transfer", price[levels[8 + i]] * 100, season=3)  # 虚高 ×100
+            for i in range(4)
+        ]
+        anchored, _ = scores.fit_model_context(
+            players, {}, [], recent + old_inflated, [],
+            version="v", trained_at="t", current_season=12,
+        )
+        unanchored, _ = scores.fit_model_context(
+            players, {}, [], recent + old_inflated, [],
+            version="v", trained_at="t",  # 无锚点 → 旧点全权重
+        )
+        recent_only, _ = scores.fit_model_context(
+            players, {}, [], recent, [], version="v", trained_at="t", current_season=12,
+        )
+        assert anchored.comp_source == "fit" and recent_only.comp_source == "fit"
+        # 不变量：锚定（旧点降权）后拟合比无衰减时更接近「只用近期点」的拟合
+        assert unanchored.comp_params["a"] != anchored.comp_params["a"]
+        assert abs(anchored.comp_params["a"] - recent_only.comp_params["a"]) < abs(
+            unanchored.comp_params["a"] - recent_only.comp_params["a"]
+        )
+        assert abs(anchored.comp_params["b"] - recent_only.comp_params["b"]) < abs(
+            unanchored.comp_params["b"] - recent_only.comp_params["b"]
+        )
+
+
 # ---- model_params / 版本 ----
 
 
@@ -344,7 +805,9 @@ class TestModelParams:
         assert scores.next_model_version(["怪值"], "2026-11-05T00:00:00+00:00") == "2026-11-05.1"
 
     def test_compute_scores_end_to_end_on_synced_db(self, all_routes):
-        """全量同步后的库：预计算 11 行、model_params 带 n/r2/version 且键形状锁定。"""
+        """全量同步 + 注入足量真实成交 + 人工发布：基线 11 行、model_params 带
+        n/r2/version 且键形状锁定。manual 模式下 scores 只出候选，发布靠
+        conftest.publish_pending_model（模拟 whl模型通过）。"""
         run_full_sync = jobs_mod.run_full_sync
         SyncContext = jobs_mod.SyncContext
         ClubSource = import_plugin("sources.club").ClubSource
@@ -352,12 +815,19 @@ class TestModelParams:
 
         conn = mem_conn()
         try:
-            from conftest import FixtureTransport
+            from conftest import FixtureTransport, publish_pending_model, seed_transaction_deals
 
             ctx = SyncContext(conn=conn, club=ClubSource("https://club.invalid", transport=FixtureTransport(all_routes)), tour=None)
             outcomes = asyncio.run(run_full_sync(ctx))
             assert all(o.status in ("ok", "skipped") for o in outcomes)
             assert not [o for o in outcomes if o.status == "failed"]
+            # fixture 成交点 0 <20：门禁拒绝，基线未落地，拒绝原因已写 meta
+            assert dao.get_meta(conn, "model_reject_reason", "").startswith("insufficient_transaction_points")
+            seed_transaction_deals(conn)
+            outcome = asyncio.run(jobs_mod.run_job(ctx, "scores"))
+            assert outcome.status == "ok" and outcome.rows == 0  # manual：候选等人工
+            publish_pending_model(conn)
+            assert dao.get_meta(conn, "model_reject_reason") is None  # 发布后清 meta
 
             wage = dao.read_model_params(conn, "wage")
             comp = dao.read_model_params(conn, "comp")

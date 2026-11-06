@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_PY = REPO_ROOT / "main.py"
 
 EXPECTED_NAME = "astrbot_plugin_whleague_advisor"
-EXPECTED_COMMAND = "whl状态"
+EXPECTED_COMMANDS = ("whl状态", "whl模型通过", "whl模型拒绝", "whl模型回滚")
 
 # AstrBot metadata 必填字段（源码 astrbot/core/star/updater.py:26
 # PLUGIN_METADATA_REQUIRED_FIELDS = ("name", "desc", "version", "author")）
@@ -65,7 +65,12 @@ def fake_astrbot(monkeypatch):
 
         @staticmethod
         def permission_type(permission_type, raise_error=True, **kwargs):
-            return _passthrough()
+            def decorator(fn):
+                # 记录 handler → 权限（whl状态/whl模型* 必须是 ADMIN）
+                captured.setdefault("permissions", {})[fn.__name__] = str(permission_type)
+                return fn
+
+            return decorator
 
         @staticmethod
         def llm_tool(name=None, *args, **kwargs):
@@ -166,11 +171,26 @@ EXPECTED_LLM_TOOLS = (
 
 def test_main_module_imports_as_package_submodule(fake_astrbot, monkeypatch):
     module = _import_main_as_package_submodule(monkeypatch)
-    assert fake_astrbot["commands"] == [EXPECTED_COMMAND]
+    assert tuple(fake_astrbot["commands"]) == EXPECTED_COMMANDS
     assert hasattr(module, "WhleagueAdvisorPlugin")
     # 阶段 4：9 个 whl_* 以 @filter.llm_tool 注册（主 agent 可见的前提）
     assert fake_astrbot["llm_tools"] == list(EXPECTED_LLM_TOOLS)
     assert fake_astrbot["event_message_type"], "群成员缓存刷新钩子应注册"
+
+
+def test_admin_commands_require_admin_permission(fake_astrbot, monkeypatch):
+    """模型门禁命令与 whl状态 一律 PermissionType.ADMIN（model-refit-plan §4.4）。"""
+    _import_main_as_package_submodule(monkeypatch)
+    permissions = fake_astrbot.get("permissions") or {}
+    # handler 方法名 → 预期命令
+    handlers = {
+        "whl_status": "whl状态",
+        "whl_model_approve": "whl模型通过",
+        "whl_model_reject": "whl模型拒绝",
+        "whl_model_rollback": "whl模型回滚",
+    }
+    for handler, command in handlers.items():
+        assert permissions.get(handler) == "ADMIN", f"{command} 必须仅管理员"
 
 
 # ---- 2. metadata.yaml ----

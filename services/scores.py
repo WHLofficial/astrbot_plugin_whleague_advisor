@@ -1,7 +1,8 @@
 """估价模型：位置内百分位画像 + fair/deal 估价 + player_scores 预计算（设计 §5.2–§5.5、§5.7）。
 
 * 预计算（C 混合裁决）：同步后物化 player_scores 基线，工具默认读基线；
-* 市场参考价 fair 只用公开价格曲线（listing/board/forced_auction），不用 RC、不用工资反推；
+* 市场参考价 fair 只用公开价格曲线，可比回归只认真实成交（model-refit-plan §3.1：
+  transfer/activation/forced_auction 的 fee；广告板/挂牌只展示，不进回归）；
 * 可成交区间 deal 把 RC 当约束：deal_low = max(fair_low, 0.5RC)、deal_high = min(fair_high, 1.5RC)；
 * 工资只做信号（wage_gap / wage_flag），不进价格（§5.3）；
 * marketValue 生产全 NULL，任何路径都不使用（HANDOFF §4）；
@@ -12,8 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..db import dao
 from . import fitting
@@ -30,8 +32,14 @@ from .formula import (
 )
 from .formula import PROFILE_ATTRS
 
+logger = logging.getLogger(__name__)
+
 ACTIVE_LISTING_STATUSES = ("listed", "bidding", "matched_pending")
-COMP_DEAL_TYPES = ("forced_auction",)  # 普通 transfer 是私聊议价，不作公开锚（§4.3）
+# 真实成交三态（model-refit-plan §3.1）：fee 是成交价。free_agent 的 fee 是新违约金、
+# promotion/demote/termination/rc_change/match 非球员成交价，都不进 comp 回归。
+COMP_DEAL_TYPES = ("transfer", "activation", "forced_auction")
+# 时间衰减半衰期（赛季）：weight = 0.5 ** (赛季龄 / 3)，锚点当前赛季（§3.1）
+COMP_SEASON_HALFLIFE = 3.0
 
 WAGE_GAP_FLAGS = ((0.8, "underpaid"), (1.2, "overpaid"))  # <0.8 underpaid / >1.2 overpaid
 
@@ -94,15 +102,110 @@ def compute_profile(attrs: dict, image: str, baseline: dict) -> dict | None:
     }
 
 
-# ---- 市场点提取（可比拟合的输入；只认公开锚，§5.3）----
+# ---- 市场点提取（可比拟合的输入；真实成交 model-refit-plan §3.1/§3.2）----
 
 
-def extract_points(players: list[dict], listings: list[dict], deals: list[dict], board: list[dict]) -> tuple[list[dict], list[dict]]:
-    """(工资点, 可比点)。全部从本地表取，绝不触网。
+def extract_wage_points(players: list[dict]) -> list[dict]:
+    """工资点：活跃且 wage>0、rc>0（trainee 工资 0.75/RC 5 同样有效）。"""
+    points = []
+    for p in players:
+        if p.get("ca") is None or p.get("age") is None:
+            continue
+        lv = ability_level(p["ca"], p["pa"] or p["ca"], p["age"])
+        if lv and (p.get("wage") or 0) > 0 and (p.get("release_fee") or 0) > 0:
+            points.append({"player_id": p["id"], "level": lv, "rc": p["release_fee"], "wage": p["wage"]})
+    return points
 
-    工资点：活跃且 wage>0、rc>0（trainee 工资 0.75/RC 5 同样有效）。
-    可比点：active 系挂牌要价 + 广告板标价 + forced_auction 成交费，
-    剔 trainee（激活价不走成年曲线，§5.3）；GK 点保留（进 role_stats、不进拟合）。
+
+def decay_weight(deal_season: int | None, current_season: int | None) -> float:
+    """时间衰减权重 0.5 ** (赛季龄 / 3)；锚点当前赛季。
+
+    赛季缺 side（旧接口无 season、无当前赛季锚）视为当季（权重 1，不猜衰减）；
+    未来赛季（脏数据）赛季龄按 0 计，同样不放大权重。
+    """
+    if deal_season is None or current_season is None:
+        return 1.0
+    age = max(0, current_season - deal_season)
+    return 0.5 ** (age / COMP_SEASON_HALFLIFE)
+
+
+def extract_transaction_points(
+    players: list[dict], deals: list[dict], *, current_season: int | None = None
+) -> tuple[list[dict], list[str]]:
+    """(真实成交 comp 点, caveats)。只从 deals 生成，listings/board 不再进入（§3.1）。
+
+    价格只取 fee（extra_fee 是审核销毁附加费，不是成交价）；剔 trainee 与
+    算不出 ability_level 的球员；GK 点保留（进 role_stats、不进拟合）。
+    成交快照（player_level/player_role）优先；缺失时回退当前 player 数据并记 caveat
+    （Phase 3 平台快照上线前全部走回退，§3.2）。
+    """
+    by_id = {p["id"]: p for p in players}
+    points: list[dict] = []
+    caveats: list[str] = []
+
+    for row in deals:
+        if row.get("type") not in COMP_DEAL_TYPES:
+            continue
+        price = row.get("fee")
+        if not price or price <= 0:
+            continue
+        deal = row.get("id")
+        snap_level = row.get("player_level")
+        snap_role = row.get("player_role")
+        p = by_id.get(row.get("player_id"))
+        # trainee 无条件剔除（§3.1）：快照与回退两条路径一致执行——
+        # 当前 players 表可判定为 trainee 的成交一律不进成年曲线回归。
+        # Phase 3 平台契约若增加成交时 trainee 标记，改用成交时口径再放宽。
+        if p is not None and p.get("status") == "trainee":
+            continue
+        if snap_level is not None:
+            lv = float(snap_level)
+        elif p is not None:
+            if p.get("ca") is None or p.get("age") is None:
+                continue
+            lv = ability_level(p["ca"], p["pa"] or p["ca"], p["age"])
+        else:
+            continue
+        if not lv:
+            continue
+        if snap_role:
+            # 快照契约是位置组（CB/FB/MF/FW/GK），但防御性兼容原始位置（ST/RB…）：
+            # 组名直接认（role_group 只认原始位置名，不认 MF/FB/FW 这类组名），
+            # 其余走 role_group 归一；两者都不出的保留原值（拟合侧会剔除）并记 caveat
+            if snap_role in fitting.FIT_ROLES or snap_role == "GK":
+                group = snap_role
+            else:
+                group = role_group(snap_role)
+                if group is None:
+                    caveats.append(f"deal {deal} 快照 player_role 无法识别: {snap_role!r}")
+                    group = snap_role
+        elif p is not None:
+            group = role_group(p.get("position"))
+        else:
+            continue
+        if not group:
+            continue
+        if snap_level is None or not snap_role:
+            caveats.append(
+                f"deal {deal} 缺成交时快照，level/role 回退当前 player 数据（current_backfill）"
+            )
+        points.append({
+            "player_id": row.get("player_id"),
+            "source": row.get("type"),
+            "price": price,
+            "level": lv,
+            "role_group": group,
+            "season": row.get("season"),
+            "weight": decay_weight(row.get("season"), current_season),
+            "snapshot_source": row.get("snapshot_source"),
+        })
+    return points, caveats
+
+
+def extract_ask_points(players: list[dict], listings: list[dict], board: list[dict]) -> list[dict]:
+    """挂牌要价 + 广告板标价的展示/弱信号点；只供展示，不传给 fit_comp（§3.1）。
+
+    Phase 1 起广告板/挂牌退出回归——保留本函数作为展示路径与 shadow 报告的接缝。
     """
     by_id = {p["id"]: p for p in players}
 
@@ -111,14 +214,7 @@ def extract_points(players: list[dict], listings: list[dict], deals: list[dict],
             return None
         return ability_level(p["ca"], p["pa"] or p["ca"], p["age"])
 
-    wage_points = []
-    comp_points = []
-    for p in players:
-        lv = level_of(p)
-        if lv and (p.get("wage") or 0) > 0 and (p.get("release_fee") or 0) > 0:
-            wage_points.append({"player_id": p["id"], "level": lv, "rc": p["release_fee"], "wage": p["wage"]})
-
-    def add_comp(p: dict | None, price, source: str) -> None:
+    def add(points: list[dict], p: dict | None, price, source: str) -> None:
         if not p or not price or price <= 0:
             return
         if p.get("status") == "trainee":
@@ -126,25 +222,50 @@ def extract_points(players: list[dict], listings: list[dict], deals: list[dict],
         lv = level_of(p)
         if not lv:
             return
-        comp_points.append({
+        points.append({
             "player_id": p["id"], "source": source, "price": price,
             "level": lv, "role_group": role_group(p.get("position")),
         })
 
+    points: list[dict] = []
     for row in listings:
         if row.get("status") in ACTIVE_LISTING_STATUSES:
-            add_comp(by_id.get(row.get("player_id")), row.get("ask_price"), "listing")
-    for row in deals:
-        if row.get("type") in COMP_DEAL_TYPES:
-            add_comp(by_id.get(row.get("player_id")), row.get("fee"), "auction")
+            add(points, by_id.get(row.get("player_id")), row.get("ask_price"), "listing")
     for row in board:
         p = by_id.get(row.get("player_id"))
         if p is None:
             # 板上球员理论上是活跃球员；不在 players 表（同步漂移窗口）时跳过，
             # 只有 players 表里的行才能算 level。
             continue
-        add_comp(p, row.get("list_price"), "board")
-    return wage_points, comp_points
+        add(points, p, row.get("list_price"), "board")
+    return points
+
+
+def _count_points(points: list[dict]) -> tuple[dict, dict]:
+    """(source_counts, season_counts)：各 deal type / 各赛季样本量（§3.1 报告口径）。"""
+    source_counts: dict = {}
+    season_counts: dict = {}
+    for p in points:
+        if p.get("source"):
+            source_counts[p["source"]] = source_counts.get(p["source"], 0) + 1
+        if p.get("season") is not None:
+            season_counts[p["season"]] = season_counts.get(p["season"], 0) + 1
+    return source_counts, season_counts
+
+
+# 发布模式（model-refit-plan §4.3）：manual=候选等 whl模型通过；auto=过门禁直接写库。
+# 默认 manual（前两次人工通过并发布后转 auto）；拒绝/回滚/force 清零退回 manual。
+PUBLISH_MODE_MANUAL = "manual"
+PUBLISH_MODE_AUTO = "auto"
+
+_COMP_PARAM_KEYS = ("a", "b", "fb", "mf", "fw")
+_WAGE_PARAM_KEYS = ("a", "b", "c")
+
+
+def publish_mode(conn: sqlite3.Connection) -> str:
+    """当前发布模式：meta.model_publish_mode，缺省 manual（首次部署即人工确认）。"""
+    raw = dao.get_meta(conn, "model_publish_mode")
+    return raw if raw in (PUBLISH_MODE_MANUAL, PUBLISH_MODE_AUTO) else PUBLISH_MODE_MANUAL
 
 
 # ---- 单球员估价（§5.3/§5.4 规则逐条落地）----
@@ -161,6 +282,11 @@ class ModelContext:
     comp_source: str = "fit"    # fit / default
     version: str = ""
     trained_at: str = ""
+    # comp 数据源报告（model-refit-plan §3.1/§3.3；候选报告 Phase 2 消费）
+    comp_source_counts: dict = field(default_factory=dict)   # deal type -> n
+    comp_season_counts: dict = field(default_factory=dict)   # season -> n（时间衰减报告）
+    comp_caveats: list = field(default_factory=list)          # 快照回退等 caveat
+    comp_rejected_reason: str | None = None                   # comp 回退默认参数时的原因
 
 
 def wage_flag_of(gap: float | None) -> str | None:
@@ -345,13 +471,19 @@ def fit_model_context(
     *,
     version: str,
     trained_at: str,
+    current_season: int | None = None,
 ) -> tuple[ModelContext, dict]:
     """拟合 → ModelContext（含 comp_role_stats）。返回 (model, model_rows)。
 
-    compute_scores（预计算）与 advice.valuation（假设场景重算）共用这同一条
-    拟合路径，保证「同输入同答案」（设计 §5.7：场景重算用同一纯函数）。
+    只被候选生成路径（sync.jobs._sync_scores 的拟合阶段）调用。Phase 2 起
+    （model-refit-plan §4.6）场景重算不再走本函数——改用 published_model_context
+    只读已发布模型，杜绝「目录价用旧模型、场景价用未过门禁新模型」的分裂。
+    Phase 1（model-refit-plan §3.1）：只有真实成交点（deals 的 fee）进 fit_comp，
+    listings/board 参数保留签名兼容但不再进入回归（仍供 whl_market_board 展示）。
+    current_season 是时间衰减锚点；None 时不衰减（全部权重 1）。
     """
-    wage_points, comp_points = extract_points(players, listings, deals, board)
+    wage_points = extract_wage_points(players)
+    comp_points, comp_caveats = extract_transaction_points(players, deals, current_season=current_season)
 
     wage_fit = fitting.fit_wage(wage_points)
     comp_fit = fitting.fit_comp(comp_points)
@@ -362,14 +494,24 @@ def fit_model_context(
     if wage_fit:
         wage_params = wage_fit.params()
         wage_source, wage_n, wage_r2 = "fit", wage_fit.n, wage_fit.r2
+
     comp_params = dict(COMP_DEFAULT_PARAMS)
     comp_source = "default"
     comp_n, comp_r2 = COMP_DEFAULT_PARAMS["n"], COMP_DEFAULT_PARAMS["r2"]
     comp_role_stats: dict = {}
+    comp_rejected_reason = None
     if comp_fit:
         comp_params = comp_fit.params()
         comp_source, comp_n, comp_r2 = "fit", comp_fit.n, comp_fit.r2
         comp_role_stats = comp_fit.role_stats
+        comp_source_counts = comp_fit.source_counts
+        comp_season_counts = comp_fit.season_counts
+    else:
+        # 拒绝路径的计数与成功路径（fit_comp 的 accepted）同口径：
+        # 只数 fit_eligible 点，不含 GK/零权重/无效行
+        eligible = fitting.fit_eligible(comp_points)
+        comp_source_counts, comp_season_counts = _count_points(eligible)
+        comp_rejected_reason = f"insufficient_transaction_points:n={len(eligible)}"
 
     model = ModelContext(
         wage_params={k: wage_params[k] for k in ("a", "b", "c")},
@@ -379,6 +521,10 @@ def fit_model_context(
         comp_source=comp_source,
         version=version,
         trained_at=trained_at,
+        comp_source_counts=comp_source_counts,
+        comp_season_counts=comp_season_counts,
+        comp_caveats=comp_caveats,
+        comp_rejected_reason=comp_rejected_reason,
     )
     model_rows = [
         {
@@ -400,29 +546,49 @@ def fit_model_context(
 def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict], list[dict], str]:
     """读本地表 → 拟合 → 逐球员估价。返回 (score_rows, model_param_rows, version)。
 
-    不写库；调用方（sync.jobs._sync_scores）在单事务里落 model_params + player_scores。
+    不写库；调用方在单事务里落 model_params + player_scores。
+    保留原因（评审 finding 4）：生产路径已拆进 sync.jobs._sync_scores 候选流程，
+    本函数是 fit_model_context + score_rows_for 的单一装配入口，现仅测试消费
+    （端到端管线覆盖），无生产调用方。
     """
     players = dao.read_active_players(conn)
     attrs_rows = dao.read_player_attrs(conn)
     attrs_by_fc = {r["fc_id"]: r["attrs"] for r in attrs_rows if r.get("attrs")}
     active_fc_ids = {p["fc_id"] for p in players if p.get("fc_id") is not None}
     attrs_by_fc = {fc: a for fc, a in attrs_by_fc.items() if fc in active_fc_ids}
-    baseline = compute_baseline(players, attrs_by_fc)
 
     listings = dao.read_listings(conn, limit=1000)
-    deals = dao.read_deals(conn, limit=200)
+    deals = dao.read_deals(conn, types=COMP_DEAL_TYPES, limit=None)  # 评审 finding 2
     board = dao.read_transfer_board(conn, limit=1000)
 
-    versions = [
-        row["version"]
-        for row in conn.execute("SELECT version FROM model_params").fetchall()
-    ]
-    version = next_model_version(versions, trained_at)
+    version = next_model_version(dao.known_model_versions(conn), trained_at)
+
+    season_row = dao.read_season(conn)
+    current_season = season_row["season"] if season_row else None
 
     model, model_rows = fit_model_context(
-        players, attrs_by_fc, listings, deals, board, version=version, trained_at=trained_at
+        players, attrs_by_fc, listings, deals, board,
+        version=version, trained_at=trained_at, current_season=current_season,
+    )
+    logger.info(
+        "comp 数据源报告：source_counts=%s season_counts=%s caveats=%d rejected=%s",
+        model.comp_source_counts, model.comp_season_counts,
+        len(model.comp_caveats), model.comp_rejected_reason,
     )
 
+    score_rows = score_rows_for(players, attrs_by_fc, model, version, trained_at)
+    return score_rows, model_rows, version
+
+
+def score_rows_for(
+    players: list[dict],
+    attrs_by_fc: dict[int, dict],
+    model: ModelContext,
+    version: str,
+    trained_at: str,
+) -> list[dict]:
+    """给定模型上下文 → 全量 player_scores 行（发布/回滚重算与候选拟合共用）。"""
+    baseline = compute_baseline(players, attrs_by_fc)
     score_rows = []
     for player in players:
         attrs = attrs_by_fc.get(player.get("fc_id")) if player.get("fc_id") is not None else None
@@ -434,7 +600,80 @@ def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict
         for col in ("strengths", "weaknesses", "flags"):
             row[f"{col}_json"] = json.dumps(row.pop(col), ensure_ascii=False)
         score_rows.append(row)
-    return score_rows, model_rows, version
+    return score_rows
+
+
+def _published_value(row: dict | None, keys: tuple[str, ...]) -> tuple[dict | None, bool]:
+    """model_params 行 → (参数 dict, 是否 fallback)；行缺失/键不齐 → (None, False)。"""
+    if not row:
+        return None, False
+    value = row.get("value") or {}
+    if all(k in value for k in keys):
+        return {k: value[k] for k in keys}, bool(value.get("fallback"))
+    return None, False
+
+
+def context_from_published(
+    comp_row: dict | None,
+    wage_row: dict | None,
+    role_stats: dict,
+    version: str,
+    trained_at: str,
+) -> ModelContext:
+    """已发布参数 → ModelContext（场景重算/发布/回滚重算共用，§4.6 只读已发布模型）。"""
+    comp_params, comp_fallback = _published_value(comp_row, _COMP_PARAM_KEYS)
+    wage_params, wage_fallback = _published_value(wage_row, _WAGE_PARAM_KEYS)
+    comp_source = "default" if comp_params is None else "persisted"
+    wage_source = "default" if wage_params is None else "persisted"
+    reason = None
+    if comp_params is None:
+        reason = "no_published_model:using_default_params"
+    return ModelContext(
+        wage_params=wage_params or {k: WAGE_DEFAULT_PARAMS[k] for k in _WAGE_PARAM_KEYS},
+        comp_params=comp_params or {k: COMP_DEFAULT_PARAMS[k] for k in _COMP_PARAM_KEYS},
+        comp_role_stats=role_stats or {},
+        wage_source=wage_source,
+        comp_source=comp_source,
+        version=version,
+        trained_at=trained_at,
+        comp_rejected_reason=reason,
+        comp_source_counts={},
+        comp_season_counts={},
+        comp_caveats=[],
+    )
+
+
+def published_model_context(conn: sqlite3.Connection) -> tuple[ModelContext, list[dict]]:
+    """只读已发布模型 → (ModelContext, model_rows)。场景重算唯一入口（§4.6）。
+
+    * 有已发布模型：用持久化参数 + meta.model_role_stats_json（发布/回滚时随模型更新）；
+    * 无持久化模型：设计默认参数并标 comp_rejected_reason（fallback 语义同旧护栏）。
+    不现场拟合：目录价与假设场景价永远来自同一个已发布模型。
+    """
+    rows = dao.read_all_model_params(conn)
+    wage_row, comp_row = rows.get("wage"), rows.get("comp")
+    try:
+        role_stats = json.loads(dao.get_meta(conn, "model_role_stats_json") or "{}")
+    except ValueError:
+        role_stats = {}
+    version = (comp_row or wage_row or {}).get("version") or "default"
+    trained_at = (comp_row or wage_row or {}).get("trained_at") or ""
+    model = context_from_published(comp_row, wage_row, role_stats, version, trained_at)
+    model_rows = [
+        {
+            "key": "wage",
+            "value": {**model.wage_params, "fallback": model.wage_source == "default"},
+            "n": (wage_row or {}).get("n") if model.wage_source != "default" else WAGE_DEFAULT_PARAMS["n"],
+            "r2": (wage_row or {}).get("r2") if model.wage_source != "default" else WAGE_DEFAULT_PARAMS["r2"],
+        },
+        {
+            "key": "comp",
+            "value": {**model.comp_params, "fallback": model.comp_source == "default"},
+            "n": (comp_row or {}).get("n") if model.comp_source != "default" else COMP_DEFAULT_PARAMS["n"],
+            "r2": (comp_row or {}).get("r2") if model.comp_source != "default" else COMP_DEFAULT_PARAMS["r2"],
+        },
+    ]
+    return model, model_rows
 
 
 def inputs_hash(player: dict, attrs: dict | None, version: str) -> str:

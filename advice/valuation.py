@@ -187,3 +187,36 @@ def baseline_caveats(fair_source: str | None, role_n: int | None) -> list[str]:
     if role_n is not None and 0 < role_n < 8:
         caveats.append(f"同角色公开价格样本只有 {role_n} 个，区间偏宽")
     return caveats
+
+
+# 过渡期模型口径短标注（model-refit-plan §4.7，决策 1/8/18）：每次给价都带，
+# 放 caveats 不进 data 字段名；门禁真正发布新模型（ok 且非 fallback）后移除（§9 风险 6）。
+LEGACY_MODEL_ANNOTATION = "旧口径：真实成交样本不足，参考价仍含广告板标价。"
+EXPERIMENTAL_MODEL_ANNOTATION = "实验模型：真实成交样本不足，仅作方向参考。"
+
+
+def model_annotation(
+    model_status: str | None,
+    reject_reason: str | None,
+    comp_fallback: bool,
+    *,
+    published_via: str | None = None,
+    detail: bool = False,
+) -> list[str]:
+    """估价回答的模型口径标注（§4.7），判定依据是发布来源（独立评审 3）：
+
+    * published_via == "forced" → 实验标注（不可关闭：后续拒绝/降级不改变标注，
+      因为线上模型仍是那个 force 发布的版本，§9 风险 7）；
+    * approved 且 ok 且非 fallback → 新口径模型已发布，过渡标注移除（§9 风险 6）；
+    * 其余（degraded/degraded_3x/无状态/rolled_back）→ 旧口径标注。
+    detail=true 时附拒绝/回滚原因，供管理员展开排查。
+    """
+    if published_via == "forced":
+        notes = [EXPERIMENTAL_MODEL_ANNOTATION]
+    elif model_status == "ok" and not comp_fallback and published_via == "approved":
+        return []  # 新口径模型已发布，过渡标注移除
+    else:
+        notes = [LEGACY_MODEL_ANNOTATION]
+    if detail and reject_reason:
+        notes.append(f"标注原因：{reject_reason}")
+    return notes

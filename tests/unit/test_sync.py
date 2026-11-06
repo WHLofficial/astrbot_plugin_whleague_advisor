@@ -99,7 +99,15 @@ class TestFullSyncSuccess:
             assert conn.execute("SELECT COUNT(*) n FROM player_attrs").fetchone()["n"] == 6
             assert conn.execute("SELECT COUNT(*) n FROM player_index").fetchone()["n"] == 40
             assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == 5
-            assert conn.execute("SELECT COUNT(*) n FROM deals").fetchone()["n"] == 11
+            # Phase 2 门禁：fixture 成交点为 0 时 scores 生成 shadow 候选不落地
+            # （11 行 fixture 成交全是 free_agent/termination 等）；注入合成真实
+            # 成交后重跑 scores 出 passed 候选，模拟人工通过才有基线
+            from conftest import publish_pending_model, seed_transaction_deals
+
+            seeded = seed_transaction_deals(conn)
+            assert run(run_job(make_ctx(conn, transport), "scores")).rows == 0  # manual：等人工
+            publish_pending_model(conn)
+            assert conn.execute("SELECT COUNT(*) n FROM deals").fetchone()["n"] == 11 + seeded
             assert conn.execute("SELECT COUNT(*) n FROM transfer_board").fetchone()["n"] == 16
             assert conn.execute("SELECT COUNT(*) n FROM player_scores").fetchone()["n"] == 11
             assert conn.execute("SELECT COUNT(*) n FROM model_params").fetchone()["n"] == 2
@@ -185,7 +193,7 @@ class TestFailureKeepsOldValues:
 
     def test_season_failure_first_run_skips_dependents(self, all_routes):
         """首次同步赛季就挂：tournaments 表为空 → standings/fixtures 跳过不崩；
-        与赛季无关的 players/attrs/scores/roster/market 照常成功（降级不中断）。"""
+        与赛季无关的 players/attrs/scores/roster/market/deals_history 照常成功（降级不中断）。"""
         conn = mem_conn()
         try:
             transport = FixtureTransport({
@@ -202,6 +210,7 @@ class TestFailureKeepsOldValues:
             assert by_job["scores"].status == "ok"
             assert by_job["roster"].status == "ok"
             assert by_job["market"].status == "ok"
+            assert by_job["deals_history"].status == "ok"
             assert by_job["standings"].status == "skipped"
             assert by_job["fixtures"].status == "skipped"
             snap = dao.collect_status_snapshot(conn)
@@ -211,7 +220,7 @@ class TestFailureKeepsOldValues:
             runs = {r["job"]: r["status"] for r in conn.execute("SELECT job, status FROM sync_runs")}
             assert runs == {
                 "season": "failed", "clubs": "ok", "players": "ok", "player_attrs": "ok",
-                "scores": "ok", "roster": "ok", "market": "ok",
+                "scores": "ok", "roster": "ok", "market": "ok", "deals_history": "ok",
                 "standings": "skipped", "fixtures": "skipped",
             }
         finally:
@@ -298,6 +307,32 @@ class TestScheduler:
             assert [o.job for o in first] == list(JOBS)
             assert all(o.status == "ok" for o in first)
             assert run(scheduler.run_cycle()) == []
+        finally:
+            conn.close()
+
+    def test_market_success_pulls_scores_forward(self, all_routes):
+        """决策 19：market 成功后 scores 立即到期，不必等 60 分钟冷间隔。"""
+        conn = mem_conn()
+        try:
+            clock = FakeClock()
+            scheduler = SyncScheduler(
+                make_ctx(conn, FixtureTransport(all_routes), clock=clock),
+                jitter=0, clock=clock,
+            )
+            first = run(scheduler.run_cycle())
+            assert "scores" in [o.job for o in first]
+            assert scheduler.next_attempt_in("scores") == pytest.approx(
+                DEFAULT_INTERVALS["scores"]
+            )
+
+            clock.advance(DEFAULT_INTERVALS["market"])
+            second = run(scheduler.run_cycle())
+            jobs = [o.job for o in second]
+            assert "market" in jobs
+            assert "scores" in jobs  # 无触发时要再等约 3300s
+            assert scheduler.next_attempt_in("scores") == pytest.approx(
+                DEFAULT_INTERVALS["scores"]
+            )
         finally:
             conn.close()
 

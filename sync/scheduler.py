@@ -1,9 +1,11 @@
 """同步调度器：单进程 asyncio 单写者（设计 §4.4 + §8.1）。
 
-* 顺序 season → clubs → players → player_attrs → market → scores → roster →
-  standings → fixtures，由 sync.jobs.run_full_sync 保证；
+* 顺序 season → clubs → players → player_attrs → market → deals_history → scores →
+  roster → standings → fixtures，由 sync.jobs.run_full_sync 保证；
+* market/deals_history 成功后立即把 scores 标为到期（model-refit-plan 决策 19：
+  每次市场同步后拟合）；scores 的 60 分钟间隔只作兜底，失败退避不被绕过；
 * 分层频率（设计 §4.2）：热 5 分钟（season/standings/fixtures/market）、
-  温 15 分钟（clubs/players）、冷 60 分钟（player_attrs/scores/roster），
+  温 15 分钟（clubs/players）、冷 60 分钟（player_attrs/scores/roster/deals_history），
   可经 _conf_schema 的 sync_hot/warm/cold_minutes 覆盖；
 * 单写者：run_cycle 全程持有 asyncio.Lock，前一轮未结束则后一轮等锁串行；
 * 失败退避（设计 §8.1）：连续失败 30s → 2min → 10min，成功后清零；
@@ -30,6 +32,7 @@ DEFAULT_INTERVALS: dict[str, float] = {
     "player_attrs": 3600.0,  # 冷 60 分钟：/api/players/meta 每批 90（约 7 批）
     "scores": 3600.0,  # 冷：拟合 + player_scores 预计算（§5.6/§5.7）
     "roster": 3600.0,  # 冷：全联盟名字索引
+    "deals_history": 3600.0,  # 冷：历史成交按游标回填（穷尽后 skipped 空转，§5.3）
     "market": 300.0,  # 热：挂牌第一页 / 最近成交 / 广告板
     "standings": 300.0,  # 热
     "fixtures": 300.0,  # 热
@@ -37,6 +40,9 @@ DEFAULT_INTERVALS: dict[str, float] = {
 
 # 连续失败退避步长（秒），设计 §8.1：30s → 2min → 10min。
 BACKOFF_STEPS: tuple[float, ...] = (30.0, 120.0, 600.0)
+
+# 这些任务成功后立刻把 scores 拉到到期（决策 19）；仍需尊重 scores 自己的失败退避。
+SCORES_TRIGGER_JOBS: tuple[str, ...] = ("market", "deals_history")
 
 
 class SyncScheduler:
@@ -87,6 +93,18 @@ class SyncScheduler:
         else:  # skipped：不惩罚，按常规间隔再试
             self._next_attempt[job] = now + self._intervals.get(job, 300.0)
 
+    def _pull_scores_forward(self, job: str, outcome: JobOutcome) -> None:
+        """market/deals_history 成功后立即让 scores 到期（决策 19）。
+
+        scores 自己的失败退避优先：连续失败期间不因市场同步被提前重试。
+        """
+        if job not in SCORES_TRIGGER_JOBS or outcome.status != "ok":
+            return
+        if "scores" not in self._jobs or self._fail_streak.get("scores", 0):
+            return
+        now = self._clock()
+        self._next_attempt["scores"] = min(self._next_attempt.get("scores", now), now)
+
     # ---- 执行入口 ----
 
     async def run_cycle(self) -> list[JobOutcome]:
@@ -98,6 +116,7 @@ class SyncScheduler:
                     continue
                 outcome = await run_job(self._ctx, job)
                 self._schedule_next(job, outcome)
+                self._pull_scores_forward(job, outcome)
                 outcomes.append(outcome)
             return outcomes
 

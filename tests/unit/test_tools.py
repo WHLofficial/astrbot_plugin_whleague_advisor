@@ -45,13 +45,22 @@ def build_tool_ctx(conn, *, allowed=None, limiter=None):
 
 
 def seeded_conn() -> sqlite3.Connection:
-    """全量同步一次的内存库（11 名球员、3 赛事、市场、基线）。"""
+    """全量同步一次的内存库（11 名球员、3 赛事、市场、已发布基线）。
+
+    Phase 2 门禁下 scores 只生成候选（manual 模式默认）：注入合成真实成交后
+    重跑 scores 任务，再模拟 whl模型通过发布，基线才可读。
+    """
     conn = dao.connect(":memory:")
     migrations.run_migrations(conn)
     club = import_plugin("sources.club").ClubSource(CLUB_BASE, transport=FixtureTransport(load_all_routes()))
     tour = import_plugin("sources.tour").TourSource("https://tour.invalid", transport=FixtureTransport(load_all_routes()))
     ctx = jobs_mod.SyncContext(conn=conn, club=club, tour=tour)
     run(jobs_mod.run_full_sync(ctx))
+    from conftest import publish_pending_model, seed_transaction_deals
+
+    seed_transaction_deals(conn)
+    run(jobs_mod.run_job(ctx, "scores"))
+    publish_pending_model(conn)
     return conn
 
 
@@ -532,6 +541,56 @@ class TestTransferMatch:
 
 
 class TestPlayerValue:
+    def _conn_with_rejected_model(self, *, seed_deals: int, persist_model: bool):
+        """生产同构库：全量同步（成交点 0 被护栏拒）→ 手工落上一版 comp 模型 →
+        注入 seed_deals 笔真实成交（<20 时护栏继续拒，11 点恰是生产场景）。"""
+        conn = dao.connect(":memory:")
+        migrations.run_migrations(conn)
+        club = import_plugin("sources.club").ClubSource(
+            CLUB_BASE, transport=FixtureTransport(load_all_routes())
+        )
+        tour = import_plugin("sources.tour").TourSource(
+            "https://tour.invalid", transport=FixtureTransport(load_all_routes())
+        )
+        ctx = jobs_mod.SyncContext(conn=conn, club=club, tour=tour)
+        run(jobs_mod.run_full_sync(ctx))
+        if persist_model:
+            dao.upsert_model_params(
+                conn, "comp",
+                {"a": -7.1, "b": 4.8, "fb": 0.5, "mf": 0.4, "fw": 0.0, "fallback": True},
+                n=18, r2=0.705674, trained_at="2026-11-05T14:00:00+00:00",
+                version="2026-11-05.14",
+            )
+        from conftest import seed_transaction_deals
+
+        seed_transaction_deals(conn, n=seed_deals)
+        run(jobs_mod.run_job(ctx, "scores"))  # <20：护栏拒绝，手工旧模型保留
+        return conn
+
+    def test_scenario_does_not_use_rejected_model(self):
+        """独立评审：11 点被同步层拒绝时，场景路径必须用持久化旧模型而非现场 11 点曲线。"""
+        conn = self._conn_with_rejected_model(seed_deals=11, persist_model=True)
+        try:
+            assert dao.get_meta(conn, "model_reject_reason")  # 同步层确实拒绝了
+            env = call(build_tool_ctx(conn), "whl_player_value",
+                       {"name": "Harry Kane", "assumptions": {"budget": 30}, "detail": True})
+            assert env["ok"] is True
+            # comp_r2 来自持久化模型（0.705674），不是 11 点现场拟合的 r2
+            assert env["data"]["model"]["comp_r2"] == 0.705674
+        finally:
+            conn.close()
+
+    def test_scenario_without_persisted_model_uses_defaults(self):
+        """无持久化模型时场景路径用设计默认参数（comp 默认 r2=0.7234），仍不用被拒曲线。"""
+        conn = self._conn_with_rejected_model(seed_deals=11, persist_model=False)
+        try:
+            env = call(build_tool_ctx(conn), "whl_player_value",
+                       {"name": "Harry Kane", "assumptions": {"budget": 30}, "detail": True})
+            assert env["ok"] is True
+            assert env["data"]["model"]["comp_r2"] == 0.7234
+        finally:
+            conn.close()
+
     def test_default_compact_judgement_material(self, ctx):
         env = call(ctx, "whl_player_value", {"name": "Harry Kane"})
         assert env["ok"] is True
@@ -557,9 +616,11 @@ class TestPlayerValue:
         assert data["ability"]["level"] == 8
         assert data["rc"]["value"] == 50
         assert data["fair"]["low"] <= data["fair"]["mid"] <= data["fair"]["high"]
-        # deal ⊆ 挂牌合法区间 [0.5RC, 1.5RC] = [25, 75]
+        # deal 锚：floor/cap 恒为 0.5RC/1.5RC=25/75；fair 区间整体低于 floor 时
+        # 收敛到 deal_high 并标 no_listable_range（§5.3 收敛规则，随拟合系数浮动）
         assert data["deal"]["floor"] == 25 and data["deal"]["cap"] == 75
-        assert 25 <= data["deal"]["low"] <= data["deal"]["high"] <= 75
+        assert data["deal"]["low"] <= data["deal"]["high"] <= 75
+        assert data["deal"]["low"] >= 25 or "no_listable_range" in data["flags"]
         assert data["fair"]["source"] in ("public_curve", "gk_outfield_0.6", "rc_fallback")
 
     def test_assumption_scenario(self, ctx):

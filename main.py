@@ -146,7 +146,7 @@ class WhleagueAdvisorPlugin(Star):
         cold_minutes = self._positive_number("sync_cold_minutes", 60.0)
         ctx = SyncContext(conn=self._conn, club=club, tour=tour)
         # 频率分层（设计 §4.2）：热 5 分钟（season/standings/fixtures/market）、
-        # 温 15 分钟（clubs/players）、冷 60 分钟（player_attrs/scores/roster）。
+        # 温 15 分钟（clubs/players）、冷 60 分钟（player_attrs/scores/roster/deals_history）。
         # tour 未配置时去掉 standings/fixtures 两个依赖 tour 的任务。
         self._scheduler = SyncScheduler(
             ctx,
@@ -155,7 +155,7 @@ class WhleagueAdvisorPlugin(Star):
                 "fixtures": hot_minutes * 60, "market": hot_minutes * 60,
                 "clubs": warm_minutes * 60, "players": warm_minutes * 60,
                 "player_attrs": cold_minutes * 60, "scores": cold_minutes * 60,
-                "roster": cold_minutes * 60,
+                "roster": cold_minutes * 60, "deals_history": cold_minutes * 60,
             },
             jobs=JOBS if tour is not None else tuple(j for j in JOBS if j not in ("standings", "fixtures")),
         )
@@ -598,6 +598,61 @@ class WhleagueAdvisorPlugin(Star):
                 reply += "\n（同步状态暂不可读）"
         elif not is_idle(self.config.get("enabled_groups"), self.config.get("club_base_url")):
             reply += "\n（数据层尚未启动，详见 AstrBot 日志）"
+        yield event.plain_result(reply)
+
+    # ---- 模型门禁管理员命令（model-refit-plan §4.4，决策 7/12/18）----
+
+    def _model_command_reply(self, action, *args, **kwargs) -> str:
+        """跑模型管理员操作；数据层未启动/前置不满足都转成文案，不抛给框架。"""
+        if self._conn is None:
+            return "操作未执行：数据层未启动（插件空转或启动失败），没有模型候选可操作。"
+        from .services import model_admin
+
+        try:
+            return action(self._conn, *args, **kwargs)
+        except model_admin.ModelAdminError as exc:
+            return model_admin.make_admin_error_reply(exc)
+        except Exception:
+            logger.exception("模型管理员命令执行失败")
+            return "操作未执行：内部错误（详见 AstrBot 日志），模型状态未变。"
+
+    @staticmethod
+    def _parse_model_command_args(tail: str) -> tuple[str, bool]:
+        """「[version] [force]」→ (version, force)；force 必须是显式单词（§4.1）。"""
+        tokens = (tail or "").split()
+        force = any(t.lower() == "force" for t in tokens)
+        version = next((t for t in tokens if t.lower() != "force"), "")
+        return version, force
+
+    @filter.command("whl模型通过")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def whl_model_approve(self, event: AstrMessageEvent, tail: str = ""):
+        """通过并发布最新模型候选；未过门禁的候选需要显式 force（仅管理员）。"""
+        version, force = self._parse_model_command_args(tail)
+        from .services import model_admin
+
+        reply = self._model_command_reply(
+            model_admin.approve_candidate, version=version or None, force=force
+        )
+        yield event.plain_result(reply)
+
+    @filter.command("whl模型拒绝")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def whl_model_reject(self, event: AstrMessageEvent, tail: str = ""):
+        """拒绝最新模型候选，继续沿用上一版已发布模型（仅管理员）。"""
+        version, _force = self._parse_model_command_args(tail)
+        from .services import model_admin
+
+        reply = self._model_command_reply(model_admin.reject_candidate, version=version or None)
+        yield event.plain_result(reply)
+
+    @filter.command("whl模型回滚")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def whl_model_rollback(self, event: AstrMessageEvent):
+        """回滚到上一版已发布模型并重算估价基线（仅管理员）。"""
+        from .services import model_admin
+
+        reply = self._model_command_reply(model_admin.rollback_model)
         yield event.plain_result(reply)
 
 

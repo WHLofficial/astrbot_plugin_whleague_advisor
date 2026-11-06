@@ -33,7 +33,8 @@ MSG_READY = (
 
 _JOB_LABELS = {
     "season": "赛季", "clubs": "俱乐部", "players": "球员", "player_attrs": "属性",
-    "scores": "估价", "roster": "名册", "market": "市场", "standings": "积分榜", "fixtures": "赛程",
+    "scores": "估价", "roster": "名册", "market": "市场", "deals_history": "成交回填",
+    "standings": "积分榜", "fixtures": "赛程",
 }
 
 # 行数小节展示的表（按 dao.table_counts 键 → 标签），只挑工具层关心的
@@ -88,7 +89,109 @@ def build_sync_summary(snapshot: dict) -> str:
     )
     if line_counts:
         lines.append(f"· 行数：{line_counts}")
+    model_lines = build_model_section(snapshot.get("model") or {})
+    if model_lines:
+        lines.extend(model_lines)
     return "\n".join(lines)
+
+
+_MODEL_STATUS_LABELS = {
+    "ok": "正常", "degraded": "旧口径兜底", "degraded_3x": "模型降级",
+    "experimental": "实验模型",
+}
+
+
+def _fmt_pct(value) -> str:
+    """小数比例 → 百分比文案；None/缺数据 → 「—」。"""
+    if not isinstance(value, (int, float)):
+        return "—"
+    return f"{value * 100:+.1f}%"
+
+
+def _coef_line(coefs: dict) -> str:
+    if not isinstance(coefs, dict):
+        return "系数 —"
+    parts = [f"{k}={v:.3f}" for k, v in coefs.items() if isinstance(v, (int, float))]
+    return "系数 " + (" ".join(parts) if parts else "—")
+
+
+def build_model_section(model: dict) -> list[str]:
+    """whl状态 的模型门禁节（model-refit-plan §4.5/决策 20/21）：最新候选 + 最近 3 次。
+
+    无候选且无状态 → 空列表（首次部署还没跑过 scores 时不占版面）。
+    """
+    latest = model.get("latest")
+    status = model.get("status")
+    if not latest and not status:
+        return []
+    lines = ["模型门禁："]
+    status_label = _MODEL_STATUS_LABELS.get(status, status or "未评估")
+    mode = model.get("publish_mode") or "manual"
+    approvals = model.get("manual_approvals") or 0
+    streak = model.get("reject_streak") or 0
+    head = f"· 状态：{status_label}｜发布模式 {mode}（人工通过 {approvals}/2）｜拒绝连击 {streak}"
+    if status == "degraded_3x" or streak >= 3:
+        # forced 实验版在场时 model_status 不降级（实验标签不可关闭），按连击数提示
+        head += " ⚠ 连续 3 次门禁拒绝，模型降级（继续沿用当前已发布模型；可人工通过数据修复后重试，或 force 发布实验模型）"
+    if model.get("reject_reason") and status not in ("ok",):
+        head += f"\n  原因：{model['reject_reason']}"
+    lines.append(head)
+    if latest:
+        report = latest.get("report") or {}
+        gate = latest.get("gate") or {}
+        metrics = report.get("metrics") or gate.get("metrics") or {}
+        n = report.get("n") or metrics.get("n")
+        r2 = report.get("r2") or metrics.get("r2")
+        loo = metrics.get("loo_mae")
+        brief = (
+            f"· 最新候选 {latest.get('version')}（{latest.get('status')}，"
+            f"{format_clock(latest.get('created_at'))}）：n={n}，R²={r2 if r2 is not None else '—'}，"
+            f"LOO MAE={f'{loo:.3f}' if isinstance(loo, (int, float)) else '—'}"
+        )
+        if report.get("method") == "ridge_huber":
+            # Phase 4（§6）：正则化候选展示选中的 λ 与有效样本量（Huber 降权后）
+            effective = report.get("effective_n")
+            brief += (f"，ridge λ={report.get('lambda')}，有效 n="
+                      f"{f'{effective:.1f}' if isinstance(effective, (int, float)) else '—'}")
+        reasons = gate.get("reasons") or []
+        if reasons:
+            brief += f"；原因：{reasons[0]}"
+        lines.append(brief)
+        if latest.get("params"):
+            lines.append(f"  {_coef_line(report.get('coefs') or {})}；"
+                         f"角色样本 {report.get('role_counts') or '—'}")
+        dist = report.get("move_distribution") or {}
+        if dist.get("count"):
+            lines.append(
+                f"  相对旧模型变动：mean {_fmt_pct(dist.get('mean'))}、中位 {_fmt_pct(dist.get('median'))}、"
+                f"P95 {_fmt_pct(dist.get('p95'))}、max {_fmt_pct(dist.get('max'))}（{dist['count']} 人）"
+            )
+        tail = report.get("residual_tail") or []
+        if tail:
+            cells = "；".join(
+                f"{r.get('player')}({r.get('type')}) fee {r.get('fee'):g} 预测 {r.get('predicted'):g} 残差 {r.get('resid'):+.2f}"
+                for r in tail
+            )
+            lines.append(f"  残差最大 3 笔：{cells}")
+        htail = report.get("huber_weight_tail") or []
+        if htail and min(r.get("weight") or 1.0 for r in htail) < 0.99:
+            # 只有真的发生降权才占版面（全 1.0 的「最低 3 笔」没有信息量）
+            cells = "；".join(
+                f"{r.get('player')}({r.get('type')}) fee {r.get('fee'):g} 权重 {r.get('weight'):.3f}"
+                for r in htail
+            )
+            lines.append(f"  Huber 权重最低 3 笔：{cells}")
+    recent = model.get("recent") or []
+    if len(recent) > 1 or (recent and not latest):
+        cells = []
+        for cand in recent[:3]:
+            report = cand.get("report") or {}
+            cells.append(
+                f"{cand.get('version')} {cand.get('status')} n={report.get('n') or '—'} "
+                f"R²={report.get('r2') if report.get('r2') is not None else '—'}"
+            )
+        lines.append("· 最近候选：" + "；".join(cells))
+    return lines
 
 
 def _normalize(enabled_groups, club_base_url):

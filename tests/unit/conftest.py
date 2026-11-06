@@ -45,6 +45,69 @@ def load_fixture(name: str):
     return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
+def seed_transaction_deals(conn, *, n: int = 23, season: int = 9) -> int:
+    """注入 n 笔合成真实成交（门禁友好：fee 由默认参数曲线 + 角色溢价生成、快照齐全）。
+
+    Phase 2 正式门禁（model-refit-plan §4.1）要求 n>=20、CB/FB/MF/FW 各>=4、
+    R²>=0.65、b>0、LOO 不劣于设计默认——随机 fee 过不了。本 helper 用
+    COMP_DEFAULT_PARAMS 曲线（±1% 固定扰动）生成 fee。Phase 4（§6）起候选走
+    Ridge+Huber：角色溢价取 CB=0/FB=+0.30/MF=+0.15/FW=0（与设计默认参数
+    fb=0.5954/mf=0.4042/fw=-0.1430 刻意不同），保证 (1) 至少一个角色系数
+    |β|>0.05（过「不许全收缩到 0」），(2) 设计默认参数的固定 MAE 明显更大，
+    LOO 护栏有真实余量。player_level/player_role 写 deal_time 快照（§3.2 契约），
+    角色与 level 正交轮换；同一球员重复成交合法（决策 11）。
+    需要「候选已过门禁、等待发布」的测试先调本 helper，再单跑 scores 任务；
+    需要已发布基线的测试接着调 publish_pending_model。
+    """
+    import math
+
+    rows = conn.execute(
+        "SELECT id FROM players WHERE active = 1 AND status != 'trainee' "
+        "AND (position IS NULL OR position != 'GK') ORDER BY id"
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return 0
+    # 复用表内现有 updated_at：部分测试依赖「每表 seed 时间唯一」的不变量
+    row = conn.execute("SELECT updated_at FROM deals LIMIT 1").fetchone()
+    now = row["updated_at"] if row else "2026-11-06T00:00:00+00:00"
+    formula = import_plugin("services.formula")
+    d = formula.COMP_DEFAULT_PARAMS
+    types = ("transfer", "activation", "forced_auction")
+    roles = ("CB", "FB", "MF", "FW")
+    levels = (6.0, 7.0, 8.0, 9.0)
+    role_offset = {"CB": 0.0, "FB": 0.30, "MF": 0.15, "FW": 0.0}  # 可识别的角色溢价
+    for i in range(n):
+        role = roles[i % 4]
+        lv = levels[(i // 4) % 4]  # 角色 × level 正交：四组系数可识别
+        fee = round(
+            math.exp(d["a"] + d["b"] * math.log(lv) + role_offset[role])
+            * (1.0 + 0.01 * ((i % 3) - 1)),
+            2,
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO deals (id, player_id, player_name, from_club_id, "
+            "from_club_name, to_club_id, to_club_name, fee, extra_fee, type, season, "
+            "window_seq, completed_at, player_level, player_role, snapshot_source, updated_at) "
+            "VALUES (?, ?, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, 2, ?, ?, ?, 'deal_time', ?)",
+            (
+                900000 + i, ids[i % len(ids)], fee, types[i % 3], season,
+                "2026-11-04T12:00:00+00:00", lv, role, now,
+            ),
+        )
+    return n
+
+
+def publish_pending_model(conn) -> str:
+    """模拟管理员 whl模型通过：发布最新已过门禁（passed）候选并重算基线。
+
+    Phase 2 起 scores 同步在 manual 模式（默认）只生成候选不落库；测试需要
+    player_scores 基线时在 run_job(ctx, "scores") 后调用本 helper。
+    """
+    admin = import_plugin("services.model_admin")
+    return admin.approve_candidate(conn)
+
+
 class FixtureTransport:
     """离线回放传输：path → 录制 fixture 文件名 / 内联 payload / 异常 / 可调用路由。
 

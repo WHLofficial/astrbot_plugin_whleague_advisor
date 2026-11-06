@@ -35,6 +35,8 @@ from . import (
 META_FC_IDS_MAX = 90
 # /api/players 列表单页上限（上游 limit ≤100，players.ts 路由约束）
 PLAYERS_PAGE_LIMIT_MAX = 100
+# /api/market/deals 单页上限（model-refit-plan §5.1：limit 默认 50、上限 200）
+DEALS_PAGE_LIMIT_MAX = 200
 
 ALLOWED_EXACT = frozenset(
     {
@@ -110,9 +112,32 @@ class ClubSource:
         """GET /api/market/listings?status= → 归一化挂牌列表（状态语义以上游为准）。"""
         return parse_listings(await self._get("/api/market/listings", {"status": status}))
 
-    async def fetch_deals(self) -> list[dict]:
-        """GET /api/market/deals → 归一化最近 50 条已完成单据。"""
-        return parse_deals(await self._get("/api/market/deals"))
+    async def fetch_deals(
+        self,
+        limit: int = 50,
+        *,
+        before: str | None = None,
+        season: int | None = None,
+        window_seq: int | None = None,
+    ) -> dict:
+        """GET /api/market/deals → {deals, next_cursor, has_more}（model-refit-plan §5.1）。
+
+        limit 上限 DEALS_PAGE_LIMIT_MAX=200（平台路由约束，超出直接拦在本地，
+        不发请求）；before 是上游 nextCursor 原样透传的翻页游标（completed_at+id
+        base64，取「比游标更旧」的一页）；season/window_seq 可选过滤。
+        旧接口无 nextCursor/hasMore 字段 → next_cursor=None、has_more=False
+        （调用方据此只拉一页，见 sync.jobs._sync_deals_history）。
+        """
+        if not 1 <= limit <= DEALS_PAGE_LIMIT_MAX:
+            raise SourceError(f"deals limit 1–{DEALS_PAGE_LIMIT_MAX}，实际 {limit}")
+        params: dict[str, Any] = {"limit": limit}
+        if before is not None:
+            params["before"] = before
+        if season is not None:
+            params["season"] = season
+        if window_seq is not None:
+            params["windowSeq"] = window_seq
+        return parse_deals(await self._get("/api/market/deals", params))
 
     async def fetch_transfer_board(self, limit: int = 200) -> list[dict]:
         """GET /api/market/transfer-board?limit= → 归一化转会广告板（上游整批排除 listed）。"""
@@ -342,10 +367,25 @@ def parse_listings(payload: Any) -> list[dict]:
     return out
 
 
-def parse_deals(payload: Any) -> list[dict]:
-    """/api/market/deals → 归一化成交行（from/to 只有队名，club_id 由本地对照解析）。"""
+def parse_deals(payload: Any) -> dict:
+    """/api/market/deals → {deals: [...], next_cursor: str|None, has_more: bool}。
+
+    成交行 from/to 只有队名，club_id 由本地对照解析（sync.jobs 落库前回填）。
+    分页契约（model-refit-plan §5.1）：新接口带 nextCursor/hasMore；旧接口两个
+    字段都没有 → next_cursor=None、has_more=False（= 只有一页，翻页即止）。
+    nextCursor 空串与 null 同视「穷尽」（parse_players 同口径，防契约漂移）；
+    hasMore 出现时必须是 bool，不是则按契约漂移拦截。
+    """
     data = require_mapping(payload, "market/deals")
     raw = require_list(require_key(data, "deals", "market/deals"), "market/deals.deals")
+    next_cursor = optional_str(data, "nextCursor", "market/deals") or None
+    raw_more = data.get("hasMore")
+    if raw_more is None:
+        has_more = False
+    elif isinstance(raw_more, bool):
+        has_more = raw_more
+    else:
+        raise SourcePayloadError(f"market/deals.hasMore 应为布尔或 null，实际 {raw_more!r}")
     out = []
     for index, item in enumerate(raw):
         where = f"market/deals[{index}]"
@@ -363,9 +403,14 @@ def parse_deals(payload: Any) -> list[dict]:
                 "season": optional_int(row, "season", where),
                 "window_seq": optional_int(row, "windowSeq", where),
                 "completed_at": optional_str(row, "completedAt", where),
+                # 成交时能力快照（model-refit-plan §3.2）：平台 Phase 3 才下发，
+                # 旧接口缺字段恒 None，拟合侧回退当前 player 数据并记 caveat。
+                "player_level": optional_float(row, "playerLevel", where),
+                "player_role": optional_str(row, "playerRole", where),
+                "snapshot_source": optional_str(row, "snapshotSource", where),
             }
         )
-    return out
+    return {"deals": out, "next_cursor": next_cursor, "has_more": has_more}
 
 
 def parse_transfer_board(payload: Any) -> list[dict]:

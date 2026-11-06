@@ -221,6 +221,25 @@ class TestMarketSync:
         finally:
             conn.close()
 
+    def test_replace_market_writes_snapshot_columns(self):
+        """deals 快照三列随 replace_market 落库；read_deals 原样带回（§3.2）。"""
+        conn = mem_conn()
+        try:
+            deals = [{
+                "id": 1, "player_id": 72, "player_name": "X", "from_club_id": None,
+                "from_club_name": "A", "to_club_id": None, "to_club_name": "B",
+                "fee": 4.0, "extra_fee": None, "type": "transfer", "season": 9,
+                "window_seq": 2, "completed_at": "2026-11-04T12:00:00+00:00",
+                "player_level": 7.5, "player_role": "CB", "snapshot_source": "deal_time",
+            }]
+            dao.replace_market(conn, [], deals, [], "2026-11-06T00:00:00+00:00")
+            row = dao.read_deals(conn)[0]
+            assert row["player_level"] == 7.5
+            assert row["player_role"] == "CB"
+            assert row["snapshot_source"] == "deal_time"
+        finally:
+            conn.close()
+
     def test_market_failure_keeps_old_rows_and_degrades(self, market_routes):
         conn = mem_conn()
         try:
@@ -232,6 +251,220 @@ class TestMarketSync:
             assert outcome.status == "failed"
             assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == before
             assert "market" in dao.get_degraded(conn)
+        finally:
+            conn.close()
+
+    def test_replace_market_upserts_deals_and_still_replaces_listings_board(self, all_routes):
+        """deals 改 upsert 不丢历史（窗口外旧行保留）；listings/board 仍整表替换。"""
+        conn = mem_conn()
+        try:
+            # 预置一条「历史回填」旧行 + 一条将被替换掉的挂牌/广告板
+            dao.upsert_deals(conn, [{
+                "id": 999, "player_id": 7, "player_name": "Old", "fee": 1.0,
+                "type": "transfer", "completed_at": "2026-01-01T00:00:00+00:00",
+            }], "2026-01-01T00:00:00+00:00")
+            conn.execute(
+                "INSERT INTO listings (id, type, status, updated_at) VALUES (888, 'normal', 'delisted', 'old')"
+            )
+            conn.execute(
+                "INSERT INTO transfer_board (player_id, name, updated_at) VALUES (777, 'Stale', 'old')"
+            )
+            run(run_job(make_ctx(conn, all_routes), "market"))
+            # deals：旧行还在 + fixture 11 条 → 12
+            assert conn.execute("SELECT COUNT(*) n FROM deals").fetchone()["n"] == 12
+            assert conn.execute(
+                "SELECT fee, updated_at FROM deals WHERE id=999"
+            ).fetchone()["fee"] == 1.0
+            # listings/board：预置的 888/777 已被整表替换冲掉
+            assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == 5
+            assert conn.execute("SELECT COUNT(*) n FROM listings WHERE id=888").fetchone()["n"] == 0
+            assert conn.execute("SELECT COUNT(*) n FROM transfer_board").fetchone()["n"] == 16
+            assert conn.execute(
+                "SELECT COUNT(*) n FROM transfer_board WHERE player_id=777"
+            ).fetchone()["n"] == 0
+        finally:
+            conn.close()
+
+
+# ---- deals_history：历史回填冷任务（model-refit-plan §5.3）----
+
+
+def _deals_history_routes(rows, *, page_size: int = 3) -> dict:
+    """/api/market/deals 新接口分页路由：before=偏移量游标，每页 page_size 条。"""
+
+    def route(params: dict):
+        start = int(params.get("before") or 0)
+        end = start + page_size
+        has_more = end < len(rows)
+        return {
+            "deals": rows[start:end],
+            "nextCursor": str(end) if has_more else None,
+            "hasMore": has_more,
+        }
+
+    return {"/api/market/deals": route}
+
+
+def _deal_row(i: int) -> dict:
+    return {
+        "id": 500 + i, "playerId": 7, "playerName": f"P{i}", "fee": 2.0 + i,
+        "type": ("transfer", "activation", "forced_auction")[i % 3],
+        "season": 8, "windowSeq": 1, "completedAt": f"2026-0{1 + i % 9}-01T00:00:00Z",
+    }
+
+
+class TestDealsHistorySync:
+    def test_old_interface_single_page_then_done(self, market_routes):
+        """旧接口无 nextCursor/hasMore：只拉第一页，置 done，下轮 skipped。"""
+        conn = mem_conn()
+        try:
+            transport = FixtureTransport(market_routes)
+            ctx = SyncContext(conn=conn, club=sources_club.ClubSource(CLUB_BASE, transport=transport), tour=None)
+            outcome = run(run_job(ctx, "deals_history"))
+            assert outcome.status == "ok" and outcome.rows == 11
+            assert len(transport.calls) == 1  # 只拉一页
+            assert transport.calls[0]["params"] == {"limit": jobs_mod.DEALS_HISTORY_PAGE_LIMIT}
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE) == "1"
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_CURSOR) is None
+            again = run(run_job(make_ctx(conn, market_routes), "deals_history"))
+            assert again.status == "skipped"
+            assert "deals_history" not in dao.get_degraded(conn)
+        finally:
+            conn.close()
+
+    def test_new_interface_paged_backfill_across_runs(self, monkeypatch):
+        """新接口：每轮限 1 页，跨轮从 meta 游标续传到穷尽；重叠行不重复。"""
+        monkeypatch.setattr(jobs_mod, "DEALS_HISTORY_MAX_PAGES", 1)
+        rows = [_deal_row(i) for i in range(8)]
+        routes = _deals_history_routes(rows)
+        conn = mem_conn()
+        try:
+            transport = FixtureTransport(routes)
+            ctx = SyncContext(conn=conn, club=sources_club.ClubSource(CLUB_BASE, transport=transport), tour=None)
+            outcomes = [run(run_job(ctx, "deals_history")) for _ in range(4)]
+            assert [(o.status, o.rows) for o in outcomes] == [
+                ("ok", 3), ("ok", 3), ("ok", 2), ("skipped", 0),
+            ]
+            assert conn.execute("SELECT COUNT(*) n FROM deals").fetchone()["n"] == 8
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE) == "1"
+            cursors = [c["params"].get("before") for c in transport.calls]
+            assert cursors == [None, "3", "6"]
+        finally:
+            conn.close()
+
+    def test_backfill_overlap_keeps_updated_at_and_fingerprint_stable(self):
+        """回填重放已有行：内容未变 updated_at 不动 → 数据指纹不变（决策 19）。"""
+        model_gate = import_plugin("services.model_gate")
+        rows = [_deal_row(i) for i in range(3)]  # 3 行单页：每轮都从头重放同样内容
+        conn = mem_conn()
+        try:
+            ctx = SyncContext(conn=conn, club=sources_club.ClubSource(CLUB_BASE, transport=FixtureTransport(_deals_history_routes(rows))), tour=None)
+            run(run_job(ctx, "deals_history"))
+            fp1 = model_gate.data_fingerprint(conn)
+            first_ts = conn.execute("SELECT updated_at FROM deals WHERE id=500").fetchone()["updated_at"]
+            # 第二轮重放同样一行不差的数据（删 done 强制重跑）
+            dao.delete_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE)
+            outcome = run(run_job(ctx, "deals_history"))
+            assert outcome.status == "ok" and outcome.rows == 3
+            assert conn.execute(
+                "SELECT updated_at FROM deals WHERE id=500"
+            ).fetchone()["updated_at"] == first_ts
+            assert model_gate.data_fingerprint(conn) == fp1
+        finally:
+            conn.close()
+
+    def test_backfill_picks_up_fee_correction(self):
+        """上游修正 fee：条件 upsert 更新行内容并推进 updated_at → 指纹变化。"""
+        model_gate = import_plugin("services.model_gate")
+        rows = [_deal_row(i) for i in range(3)]
+        conn = mem_conn()
+        try:
+            ctx = SyncContext(conn=conn, club=sources_club.ClubSource(CLUB_BASE, transport=FixtureTransport(_deals_history_routes(rows))), tour=None)
+            run(run_job(ctx, "deals_history"))
+            fp1 = model_gate.data_fingerprint(conn)
+            corrected = [{**rows[0], "fee": 99.0}, *rows[1:]]
+            ctx = SyncContext(conn=conn, club=sources_club.ClubSource(CLUB_BASE, transport=FixtureTransport(_deals_history_routes(corrected))), tour=None)
+            dao.delete_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE)
+            outcome = run(run_job(ctx, "deals_history"))
+            assert outcome.status == "ok"
+            assert conn.execute("SELECT fee FROM deals WHERE id=500").fetchone()["fee"] == 99.0
+            assert model_gate.data_fingerprint(conn) != fp1
+        finally:
+            conn.close()
+
+    def test_upsert_deals_content_unchanged_keeps_updated_at(self):
+        """dao.upsert_deals 直测：同内容重写不碰 updated_at，任一内容列变化才更新。"""
+        conn = mem_conn()
+        try:
+            row = {
+                "id": 1, "player_id": 72, "player_name": "X", "from_club_id": None,
+                "from_club_name": "A", "to_club_id": None, "to_club_name": "B",
+                "fee": 4.0, "extra_fee": None, "type": "transfer", "season": 9,
+                "window_seq": 2, "completed_at": "2026-11-04T12:00:00+00:00",
+                "player_level": 7.5, "player_role": "CB", "snapshot_source": "deal_time",
+            }
+            dao.upsert_deals(conn, [row], "t1")
+            dao.upsert_deals(conn, [dict(row)], "t2")  # 内容全同
+            r = conn.execute("SELECT updated_at FROM deals WHERE id=1").fetchone()
+            assert r["updated_at"] == "t1"
+            dao.upsert_deals(conn, [{**row, "fee": 5.0}], "t3")  # fee 修正
+            r = conn.execute("SELECT fee, updated_at FROM deals WHERE id=1").fetchone()
+            assert (r["fee"], r["updated_at"]) == (5.0, "t3")
+            # 快照回填（None → deal_time 快照）同样推进 updated_at
+            dao.upsert_deals(conn, [{**row, "fee": 5.0, "player_level": None,
+                                     "player_role": None, "snapshot_source": None}], "t4")
+            r = conn.execute("SELECT player_level, updated_at FROM deals WHERE id=1").fetchone()
+            assert (r["player_level"], r["updated_at"]) == (None, "t4")
+            assert dao.upsert_deals(conn, [], "t5") == 0
+        finally:
+            conn.close()
+
+    def test_read_deals_types_filter_and_unlimited(self):
+        """评审 finding 2：types 过滤 + limit=None 全量（拟合窗口不被噪声行截断）。"""
+        conn = mem_conn()
+        try:
+            dao.upsert_deals(conn, [
+                {"id": 1, "type": "transfer", "completed_at": "2026-01-03T00:00:00+00:00"},
+                {"id": 2, "type": "free_agent", "completed_at": "2026-01-02T00:00:00+00:00"},
+                {"id": 3, "type": "activation", "completed_at": "2026-01-01T00:00:00+00:00"},
+            ], "t")
+            comp = dao.read_deals(conn, types=("transfer", "activation"), limit=None)
+            assert [r["id"] for r in comp] == [1, 3]  # 全量不截断 + 类型过滤
+            assert [r["id"] for r in dao.read_deals(conn, limit=1)] == [1]  # 显式 limit 仍生效
+        finally:
+            conn.close()
+
+    def test_market_seeing_next_cursor_unlatches_done(self, market_routes):
+        """评审 finding 1：旧接口首跑置 done 闩死回填；平台分页接口上线后热同步
+        看到 nextCursor 自动清 done/cursor，下一轮冷任务恢复回填（部署顺序 §5.4）。"""
+        conn = mem_conn()
+        try:
+            run(run_job(make_ctx(conn, market_routes), "deals_history"))
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE) == "1"
+            dao.set_meta(conn, jobs_mod.META_DEALS_HISTORY_CURSOR, "stale", "t")
+
+            def hot(params):
+                return {"deals": [_deal_row(0)], "nextCursor": "cursor-1", "hasMore": True}
+
+            routes = dict(market_routes)
+            routes["/api/market/deals"] = hot
+            run(run_job(make_ctx(conn, routes), "market"))
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE) is None
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_CURSOR) is None
+            # 下一轮冷任务恢复回填（不再 skipped）
+            rows = [_deal_row(i) for i in range(3)]
+            outcome = run(run_job(make_ctx(conn, _deals_history_routes(rows)), "deals_history"))
+            assert outcome.status == "ok" and outcome.rows == 3
+        finally:
+            conn.close()
+
+    def test_market_without_next_cursor_keeps_latch(self, market_routes):
+        """旧接口热同步（nextCursor 恒 None）不误清穷尽标记。"""
+        conn = mem_conn()
+        try:
+            dao.set_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE, "1", "t")
+            run(run_job(make_ctx(conn, market_routes), "market"))
+            assert dao.get_meta(conn, jobs_mod.META_DEALS_HISTORY_DONE) == "1"
         finally:
             conn.close()
 
@@ -277,8 +510,15 @@ class TestRosterSync:
 class TestQueries:
     @pytest.fixture()
     def synced_conn(self, all_routes):
+        """全量同步 + 注入合成真实成交 + 发布候选（Phase 2 门禁下 scores 只出
+        候选，基线靠模拟人工通过，见 conftest.publish_pending_model）。"""
         conn = mem_conn()
         run(run_full_sync(make_ctx(conn, all_routes)))
+        from conftest import publish_pending_model, seed_transaction_deals
+
+        seed_transaction_deals(conn)
+        run(run_job(make_ctx(conn, all_routes), "scores"))
+        publish_pending_model(conn)
         yield conn
         conn.close()
 
@@ -355,10 +595,89 @@ class TestSourceParsersOnFixtures:
     def test_market_fixtures_roundtrip(self):
         listings = sources_club.parse_listings(load_fixture("club_market_listings.json"))
         assert len(listings) == 5
-        deals = sources_club.parse_deals(load_fixture("club_market_deals.json"))
-        assert len(deals) == 11
+        payload = sources_club.parse_deals(load_fixture("club_market_deals.json"))
+        # 录制的是旧接口：无 nextCursor/hasMore → 单页穷尽（model-refit-plan §5.3）
+        assert payload["next_cursor"] is None
+        assert payload["has_more"] is False
+        assert len(payload["deals"]) == 11
+        # 旧接口无快照字段 → 恒 None（model-refit-plan §3.2 兼容口径）
+        for row in payload["deals"]:
+            assert row["player_level"] is None
+            assert row["player_role"] is None
+            assert row["snapshot_source"] is None
+
+    def test_parse_deals_snapshot_fields(self):
+        """playerLevel/playerRole/snapshotSource 解析；缺字段容错为 None。"""
+        base = {
+            "id": 1, "playerId": 72, "type": "transfer", "fee": 4, "extraFee": None,
+            "season": 9, "windowSeq": 2, "completedAt": "2026-11-04T12:00:00Z",
+        }
+        with_snap = {**base, "playerLevel": 7.5, "playerRole": "CB", "snapshotSource": "deal_time"}
+        rows = sources_club.parse_deals({"deals": [with_snap, base]})["deals"]
+        assert rows[0]["player_level"] == 7.5
+        assert rows[0]["player_role"] == "CB"
+        assert rows[0]["snapshot_source"] == "deal_time"
+        assert rows[1]["player_level"] is None
+        assert rows[1]["player_role"] is None
+        assert rows[1]["snapshot_source"] is None
         board = sources_club.parse_transfer_board(load_fixture("club_market_board.json"))
         assert len(board) == 16
+
+
+# ---- deals 分页契约（model-refit-plan §5.1/§5.3）----
+
+
+class TestDealsPaginationContract:
+    def test_new_interface_next_cursor_and_has_more(self):
+        """新接口：nextCursor 原样带回（空串视同 null），hasMore 必须是 bool。"""
+        row = {"id": 1, "playerId": 72, "type": "transfer", "fee": 4}
+        payload = sources_club.parse_deals(
+            {"deals": [row], "nextCursor": "eyJ0IjoxfQ==", "hasMore": True}
+        )
+        assert payload["next_cursor"] == "eyJ0IjoxfQ=="
+        assert payload["has_more"] is True
+        payload = sources_club.parse_deals({"deals": [row], "nextCursor": "", "hasMore": False})
+        assert payload["next_cursor"] is None  # 空串与 null 同视「穷尽」
+        assert payload["has_more"] is False
+        # hasMore=null：视同缺字段（穷尽）
+        payload = sources_club.parse_deals({"deals": [row], "nextCursor": None, "hasMore": None})
+        assert payload["next_cursor"] is None and payload["has_more"] is False
+
+    def test_has_more_type_error_rejected(self):
+        """hasMore 漂移成非布尔 → SourcePayloadError（sources 层严格校验口径）。"""
+        with pytest.raises(import_plugin("sources").SourcePayloadError):
+            sources_club.parse_deals({"deals": [], "nextCursor": None, "hasMore": "yes"})
+
+    def test_fetch_deals_params_and_limit_guard(self):
+        """limit/before/season/window_seq 进 query；limit 越界不发请求直接拦。"""
+        calls = []
+
+        async def transport(method, url, params):
+            calls.append({"url": url, "params": params})
+            from conftest import import_plugin as imp
+
+            return imp("sources").HttpResponse(200, b'{"deals": [], "nextCursor": null}')
+
+        club = sources_club.ClubSource(CLUB_BASE, transport=transport)
+        payload = run(club.fetch_deals(200, before="CUR", season=9, window_seq=2))
+        assert payload == {"deals": [], "next_cursor": None, "has_more": False}
+        assert calls[0]["params"] == {"limit": 200, "before": "CUR", "season": 9, "windowSeq": 2}
+        with pytest.raises(import_plugin("sources").SourceError):
+            run(club.fetch_deals(201))
+        with pytest.raises(import_plugin("sources").SourceError):
+            run(club.fetch_deals(0))
+        assert len(calls) == 1  # 越界两次都没发出请求
+
+    def test_fetch_deals_default_limit_50_no_filters(self):
+        calls = []
+
+        async def transport(method, url, params):
+            calls.append(params)
+            return import_plugin("sources").HttpResponse(200, b'{"deals": [], "nextCursor": null}')
+
+        club = sources_club.ClubSource(CLUB_BASE, transport=transport)
+        run(club.fetch_deals())
+        assert calls[0] == {"limit": 50}
 
     def test_transfer_board_requires_total(self):
         payload = load_fixture("club_market_board.json")

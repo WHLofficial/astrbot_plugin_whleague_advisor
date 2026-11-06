@@ -9,11 +9,10 @@ from ..advice import compare as compare_advice
 from ..advice import valuation as valuation_advice
 from ..db import dao
 from ..guard.errors import NO_DATA, ToolError, ok_envelope
-from ..services.scores import compute_baseline, fit_model_context
 from .context import CallContext, ToolContext
 from .freshness import ensure_not_hard_stale, stale_report
 from .resolve import resolve_player
-from .value import _merge_player
+from .value import _merge_player, model_annotation_caveats
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
 PRESENTATION = "先给一句谁更强/谁更值；只挑一个最突出的对比维度（能力/估价/年龄/合同）展开，其余一句带过；不要逐项列数字。"
@@ -40,17 +39,16 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     a_row = _score_row(ctx.conn, a["id"])
     b_row = _score_row(ctx.conn, b["id"])
     if assumptions or a_row is None or b_row is None:
-        # 场景重算 / 基线缺行：统一走现场重算（同一纯函数，§5.7）
+        # 场景重算 / 基线缺行：同一纯函数重算，模型只读已发布参数（§5.7 +
+        # model-refit-plan §4.6：不现场拟合，避免目录价与场景价来自两个模型）
+        from ..services import scores as scores_svc
+        from ..services.scores import compute_baseline
+
         players = dao.read_active_players(ctx.conn)
         attrs_rows = dao.read_player_attrs(ctx.conn)
         attrs_by_fc = {r["fc_id"]: r["attrs"] for r in attrs_rows if r.get("attrs")}
         baseline = compute_baseline(players, attrs_by_fc)
-        model, model_rows = fit_model_context(
-            players, attrs_by_fc,
-            dao.read_listings(ctx.conn, limit=1000), dao.read_deals(ctx.conn, limit=200),
-            dao.read_transfer_board(ctx.conn, limit=1000),
-            version=_current_version(ctx.conn), trained_at=ctx.now().isoformat(timespec="seconds"),
-        )
+        model, model_rows = scores_svc.published_model_context(ctx.conn)
         model_meta = valuation_advice.model_meta_from_rows(model_rows)
         a_row = _evaluate(a, attrs_by_fc, baseline, model, assumptions)
         b_row = _evaluate(b, attrs_by_fc, baseline, model, assumptions)
@@ -69,6 +67,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         "参考价是公开挂牌/成交价估的，不是官方身价",
         "marketValue 生产为空，未使用",
     ]
+    caveats.extend(model_annotation_caveats(ctx.conn, detail=detail))
     if assumptions:
         caveats.extend(a_row.get("assumptions_caveats") or [])
         caveats.extend(b_row.get("assumptions_caveats") or [])
@@ -186,11 +185,3 @@ def _player_brief(player: dict) -> dict:
         "age": player.get("age"),
         "status": player.get("status"),
     }
-
-
-def _current_version(conn) -> str:
-    row = conn.execute("SELECT version FROM model_params WHERE key = 'comp'").fetchone()
-    if row and row["version"]:
-        return row["version"]
-    row = conn.execute("SELECT version FROM model_params ORDER BY trained_at DESC LIMIT 1").fetchone()
-    return row["version"] if row else "ad-hoc"

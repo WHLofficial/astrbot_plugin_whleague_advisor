@@ -52,25 +52,21 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         ensure_not_hard_stale(report, ("market",), what="估价")
         data = assemble_value_data(_merge_player(player, row), dao.read_all_model_params(ctx.conn))
     else:
-        # 场景路径：同一纯函数现场重算（§5.7）
+        # 场景路径：同一纯函数重算，但模型只读已发布参数（§5.7 + model-refit-plan
+        # §4.6：不现场拟合，杜绝「目录价用旧模型、场景价用未过门禁新模型」的分裂）
         ensure_not_hard_stale(report, ("market",), what="假设场景估价")
         player = resolve_player(
             ctx.conn, args["name"], cache=ctx.translations,
             members=ctx.members, group_id=call.group_id, session_id=call.session_id,
         )
-        from ..services.scores import compute_baseline, fit_model_context
+        from ..services import scores as scores_svc
+        from ..services.scores import compute_baseline
 
         players = dao.read_active_players(ctx.conn)
         attrs_rows = dao.read_player_attrs(ctx.conn)
         attrs_by_fc = {r["fc_id"]: r["attrs"] for r in attrs_rows if r.get("attrs")}
         baseline = compute_baseline(players, attrs_by_fc)
-        listings = dao.read_listings(ctx.conn, limit=1000)
-        deals = dao.read_deals(ctx.conn, limit=200)
-        board = dao.read_transfer_board(ctx.conn, limit=1000)
-        model, model_rows = fit_model_context(
-            players, attrs_by_fc, listings, deals, board,
-            version=_current_version(ctx.conn), trained_at=ctx.now().isoformat(timespec="seconds"),
-        )
+        model, model_rows = scores_svc.published_model_context(ctx.conn)
         attrs = (_attrs_of(ctx.conn, player.get("fc_id")) or {}).get("attrs")
         try:
             row = valuation_advice.evaluate_scenario(player, attrs, baseline, model, assumptions)
@@ -82,6 +78,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     caveats = list(valuation_advice.baseline_caveats(
         (data.get("fair") or {}).get("source"), data.get("model", {}).get("role_n")
     ))
+    caveats.extend(model_annotation_caveats(ctx.conn, detail=detail))
     if assumptions:
         caveats.extend(row.get("assumptions_caveats") or [])
     data["player"] = {
@@ -189,9 +186,14 @@ def _merge_player(player: dict, row: dict) -> dict:
     return merged
 
 
-def _current_version(conn) -> str:
-    row = conn.execute("SELECT version FROM model_params WHERE key = 'comp'").fetchone()
-    if row and row["version"]:
-        return row["version"]
-    row = conn.execute("SELECT version FROM model_params ORDER BY trained_at DESC LIMIT 1").fetchone()
-    return row["version"] if row else "ad-hoc"
+def model_annotation_caveats(conn, *, detail: bool = False) -> list[str]:
+    """过渡期模型口径短标注（model-refit-plan §4.7）：whl_player_value /
+    whl_compare_players 的估价回答都带（caveats，不进 data 字段名）。
+    判定依据发布来源 meta.model_published_via（独立评审 3）。"""
+    return valuation_advice.model_annotation(
+        dao.get_meta(conn, "model_status"),
+        dao.get_meta(conn, "model_reject_reason"),
+        bool(((dao.read_model_params(conn, "comp") or {}).get("value") or {}).get("fallback")),
+        published_via=dao.get_meta(conn, "model_published_via"),
+        detail=detail,
+    )
