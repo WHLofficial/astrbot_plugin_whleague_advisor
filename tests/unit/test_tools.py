@@ -641,10 +641,13 @@ class TestPlayerValue:
         env = call(ctx, "whl_player_value", {"name": "Harry Kane"})
         assert env["ok"] is True
         data = env["data"]
-        assert set(data) == {"player", "facts", "signals"}
+        assert set(data) == {"player", "ability", "facts", "signals"}
+        assert data["ability"]["profile_score"] is not None
+        assert data["ability"]["strengths"]
         assert data["facts"]["rc"] == 50 and data["facts"]["market"]["mid"] is not None
         assert set(data["signals"]) == {"rc", "wage", "value", "age", "role"}
-        assert env["presentation"] and "不要念数字清单" in env["presentation"]
+        assert env["presentation"] and "球员特点" in env["presentation"]
+        assert "买不划算" not in data["signals"]["rc"]
         assert "fair" not in data and "deal" not in data
 
     def test_rounding_rule_added_to_tool_presentation(self, ctx):

@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.4）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.5）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,12 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.5 估价回复与缓存优化：
+- whl_player_value 默认返回 ability，先讲球员特点，违约金只作价格约束，
+  不主动展开激活/匹配或买卖建议；
+- 身份、估价重查、金额取整提示改挂本轮 user content 临时内容块
+  （mark_as_temp，不写入历史），system_prompt 保持稳定，减少前缀缓存失效。
 
 v0.8.4 金额取整修复：
 - round_amounts_to_five 同时注入主 agent 与金额类工具 presentation；
@@ -90,6 +96,64 @@ TOOL_METHOD_NAMES = (
 
 # 空转/数据层失败时统一停用的名字：9 个 whl_* 工具 + 2 个 handoff（若已注册）。
 DEACTIVATABLE_TOOL_NAMES = TOOL_METHOD_NAMES + HANDOFF_TOOL_NAMES
+
+
+class _FallbackTextPart:
+    """旧版 AstrBot 没有 core.agent.message.TextPart 时的测试/兼容占位。"""
+
+    def __init__(self, text: str):
+        self.text = text
+        self._no_save = True
+
+    def mark_as_temp(self):
+        self._no_save = True
+        return self
+
+    def model_dump_for_context(self) -> dict:
+        return {"type": "text", "text": self.text, "_no_save": True}
+
+
+def _user_content_parts(req) -> list | None:
+    """取当前 user message 的额外内容块；None 表示宿主不支持该字段。"""
+    parts = getattr(req, "extra_user_content_parts", None)
+    if parts is None:
+        return None
+    if not isinstance(parts, list):
+        parts = list(parts)
+        req.extra_user_content_parts = parts
+    return parts
+
+
+def _has_user_content(req, marker: str) -> bool:
+    for part in _user_content_parts(req) or ():
+        text = part.get("text", "") if isinstance(part, dict) else getattr(part, "text", "")
+        if marker in text:
+            return True
+    return False
+
+
+def _append_temp_user_content(req, text: str, marker: str) -> None:
+    """把动态提示挂到本轮 user content；mark_as_temp 保证不写入历史。
+
+    这样 system_prompt 保持稳定，prompt cache 的前缀不会被发送者身份等
+    每轮变化的内容打断。旧版 AstrBot 若没有 extra_user_content_parts，则
+    退回 system_prompt，功能不变但缓存收益较小。
+    """
+    parts = _user_content_parts(req)
+    if parts is None:
+        prompt = getattr(req, "system_prompt", None)
+        if isinstance(prompt, str) and marker not in prompt:
+            req.system_prompt = prompt.rstrip() + "\n\n" + text
+        return
+    if _has_user_content(req, marker):
+        return
+    try:
+        from astrbot.core.agent.message import TextPart
+
+        part = TextPart(text=text).mark_as_temp()
+    except Exception:  # noqa: BLE001 - 测试/旧版宿主的轻量兼容
+        part = _FallbackTextPart(text)
+    parts.append(part)
 
 
 class WhleagueAdvisorPlugin(Star):
@@ -368,19 +432,16 @@ class WhleagueAdvisorPlugin(Star):
 
     @filter.on_llm_request()
     async def inject_sender_identity(self, event: AstrMessageEvent, req):
-        """把发送者绑定球队放进 system_prompt；绑定未知时要求先查/反问，不猜。"""
+        """把发送者绑定球队挂到本轮 user content；绑定未知时要求先查/反问，不猜。"""
         ctx = self._tool_ctx
         if ctx is None:
             return
         group_id = _safe_group_id(event)
         if not group_id or not ctx.group_allowed(group_id):
             return
-        prompt = getattr(req, "system_prompt", None)
-        if not isinstance(prompt, str):
-            return
         from .identity.preflight import IDENTITY_MARKER, identity_line
 
-        if IDENTITY_MARKER in prompt:
+        if _has_user_content(req, IDENTITY_MARKER):
             return
         from .tools.context import CallContext
         from .tools.resolve import resolve_sender_identity
@@ -403,7 +464,7 @@ class WhleagueAdvisorPlugin(Star):
         except Exception:  # noqa: BLE001 - 身份预注入失败不能挡回复
             logger.debug("%s：发送者身份预注入失败（群 %s）", PLUGIN_NAME, group_id, exc_info=True)
             return
-        req.system_prompt = prompt.rstrip() + "\n\n" + identity_line(identity)
+        _append_temp_user_content(req, identity_line(identity), IDENTITY_MARKER)
 
     # ---- 估价必须重查（避免模型复用历史旧价）----
 
@@ -416,14 +477,9 @@ class WhleagueAdvisorPlugin(Star):
         group_id = _safe_group_id(event)
         if not group_id or not ctx.group_allowed(group_id):
             return
-        prompt = getattr(req, "system_prompt", None)
-        if not isinstance(prompt, str):
-            return
         from .identity.preflight import PRICE_FRESHNESS_MARKER, price_freshness_line
 
-        if PRICE_FRESHNESS_MARKER in prompt:
-            return
-        req.system_prompt = prompt.rstrip() + "\n\n" + price_freshness_line()
+        _append_temp_user_content(req, price_freshness_line(), PRICE_FRESHNESS_MARKER)
 
     # ---- 金额取整（配置 round_amounts_to_five；主 agent 直调工具也要生效）----
 
@@ -438,14 +494,9 @@ class WhleagueAdvisorPlugin(Star):
         group_id = _safe_group_id(event)
         if not group_id or not ctx.group_allowed(group_id):
             return
-        prompt = getattr(req, "system_prompt", None)
-        if not isinstance(prompt, str):
-            return
         from .subagents import MONEY_ROUNDING_RULE
 
-        if MONEY_ROUNDING_RULE in prompt:
-            return
-        req.system_prompt = prompt.rstrip() + "\n\n" + MONEY_ROUNDING_RULE
+        _append_temp_user_content(req, MONEY_ROUNDING_RULE, "【金额口语化】")
 
     # ---- 9 个 whl_* 工具（AstrBot LLM FunctionTool）----
 

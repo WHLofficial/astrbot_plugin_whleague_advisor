@@ -2,6 +2,18 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.5] - 2026-11-06
+
+### Changed
+
+- 估价回复改为先说球员特点（能力等级/优势/短板/位置），再给价格判断；违约金只作为价格约束，不再主动展开激活/匹配或买卖建议。
+- `whl_player_value` 默认 compact 数据增加 `ability`，包含 `level`、`profile_score`、`strengths`、`weaknesses`；违约金相关文案改为中性描述。
+- 发送者身份、估价必须重查、金额取整提示改挂本轮 user content 临时内容块（`mark_as_temp`，不写入历史），`system_prompt` 保持稳定，降低前缀缓存失效。
+
+### Fixed
+
+- 修复估价回复被激活建议抢占、球员自身特点被忽略的问题。
+
 ## [0.8.4] - 2026-11-06
 
 ### Fixed
@@ -102,6 +114,7 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.5]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.5
 [0.8.4]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.4
 [0.8.3]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.3
 [0.8.2]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.2

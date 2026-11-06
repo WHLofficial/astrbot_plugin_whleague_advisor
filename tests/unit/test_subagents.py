@@ -233,18 +233,47 @@ def test_main_agent_injects_money_rounding_when_enabled():
     class _Req:
         system_prompt = "base prompt"
 
+        def __init__(self):
+            self.extra_user_content_parts = []
+
     req = _Req()
     asyncio.run(plugin.inject_money_rounding(_FakeEvent(), req))
-    assert "5 的倍数" in req.system_prompt
+    assert req.system_prompt == "base prompt"
+    assert any("5 的倍数" in getattr(part, "text", "") for part in req.extra_user_content_parts)
+    assert all(getattr(part, "_no_save", False) for part in req.extra_user_content_parts)
     # 重复请求不重复追加
     asyncio.run(plugin.inject_money_rounding(_FakeEvent(), req))
-    assert req.system_prompt.count("【金额口语化】") == 1
+    joined = "\n".join(getattr(part, "text", "") for part in req.extra_user_content_parts)
+    assert joined.count("【金额口语化】") == 1
 
     off_plugin = _plugin(_RecordingContext(), {"round_amounts_to_five": False})
     off_plugin._tool_ctx = SimpleNamespace(group_allowed=lambda _gid: True)
     off_req = _Req()
     asyncio.run(off_plugin.inject_money_rounding(_FakeEvent(), off_req))
-    assert "5 的倍数" not in off_req.system_prompt
+    assert off_req.system_prompt == "base prompt"
+    assert not off_req.extra_user_content_parts
+
+
+def test_price_freshness_uses_user_content_not_system_prompt():
+    """动态/规则提示挂当前 user content，system_prompt 保持稳定以复用前缀缓存。"""
+    from types import SimpleNamespace
+
+    from test_llm_registration import _FakeEvent
+
+    plugin = _plugin(_RecordingContext(), {})
+    plugin._tool_ctx = SimpleNamespace(group_allowed=lambda _gid: True)
+
+    class _Req:
+        system_prompt = "base prompt"
+
+        def __init__(self):
+            self.extra_user_content_parts = []
+
+    req = _Req()
+    asyncio.run(plugin.inject_price_freshness(_FakeEvent(), req))
+    assert req.system_prompt == "base prompt"
+    assert any("【估价必须重查】" in getattr(part, "text", "") for part in req.extra_user_content_parts)
+    assert all(getattr(part, "_no_save", False) for part in req.extra_user_content_parts)
 
 
 def test_deactivatable_names_include_handoffs():

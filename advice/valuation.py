@@ -21,8 +21,8 @@ ASSUMPTION_KEYS = ("ca_delta", "age", "pa", "budget", "role")
 _GROUP_POSITION = {"GK": "GK", "CB": "CB", "FB": "RB", "MF": "CM", "FW": "ST"}
 
 _RC_FLAG_TEXT = {
-    "rc_overpriced": "违约金高于市场参考价（按 RC 买不划算）",
-    "rc_suppressed": "挂牌上限低于市场参考价（违约金会压价）",
+    "rc_overpriced": "违约金明显高于市场参考价",
+    "rc_suppressed": "违约金低于市场参考价，会压价",
     "rc_capped": "违约金能覆盖市场参考价中段，但封住高端",
     "rc_fair": "违约金不压价",
 }

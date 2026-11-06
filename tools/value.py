@@ -25,14 +25,15 @@ from .resolve import resolve_player
 
 SOURCE = ["contract", "listings", "transfer_board", "deals"]
 PRESENTATION = (
-    "先给一句价格判断（大概值多少/可能成交价）；只挑一个最影响价格的点"
-    "（违约金、工资、年龄、买方预算）展开，其余一句带过；不要念数字清单，"
+    "先用一句说清球员特点（能力等级、优势、短板，结合位置）；再给价格判断。"
+    "只有与价格直接相关时才提违约金、工资或年龄，且只挑一个点展开；"
+    "不要主动展开激活/匹配或买卖建议；不要念数字清单，"
     "也不要主动说“可成交区间/置信度”这类内部词。"
 )
 _RC_TEXT = {
-    "rc_overpriced": "违约金太高（按违约金买不划算）",
-    "rc_suppressed": "违约金会压价",
-    "rc_capped": "违约金封顶（高端卖不到参考价）",
+    "rc_overpriced": "违约金明显高于参考价",
+    "rc_suppressed": "违约金低于参考价，会压价",
+    "rc_capped": "违约金封住高端价",
     "rc_fair": "违约金不挡价",
 }
 
@@ -267,7 +268,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="任何情况下不说「官方身价」；先给大概值/可能成交价，别主动说可成交区间、置信度这类内部词；涉及激活/匹配时用 whl_transfer_match 查卖方能不能加价匹配",
+        hint="任何情况下不说「官方身价」；先讲球员特点（优势/短板）和对价格的影响；违约金只作为价格约束，不要主动展开激活/匹配或买卖建议；用户明确问激活/匹配时才用 whl_transfer_match",
     )
 
 
@@ -303,6 +304,12 @@ def _compact_data(full: dict) -> dict:
         facts["affordability"] = full["affordability"]
     data = {
         "player": player,
+        "ability": {
+            "level": (full.get("ability") or {}).get("level"),
+            "profile_score": (full.get("ability") or {}).get("profile_score"),
+            "strengths": (full.get("ability") or {}).get("strengths") or [],
+            "weaknesses": (full.get("ability") or {}).get("weaknesses") or [],
+        },
         "facts": facts,
         "signals": {
             "rc": _RC_TEXT.get(rc.get("flag"), "无违约金" if rc.get("value") is None else "数据不足"),
