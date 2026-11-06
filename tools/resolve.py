@@ -227,6 +227,7 @@ def resolve_player(
     members=None,
     group_id: str | None = None,
     session_id: str | None = None,
+    allow_inactive: bool = False,
 ) -> dict:
     """球员名 → players 行（含 club_name）。命中唯一才返回；歧义/查不到按设计抛错。
 
@@ -235,6 +236,9 @@ def resolve_player(
       群成员也没有 → NOT_FOUND + hint「请现译成拉丁名」（Q7，模型下一轮带拉丁名重调）；
     * 拉丁名：精确 → 前缀 → 子串；多命中 AMBIGUOUS（≤5 候选带 clubName/position/age）；
       活跃名单无、全联盟索引有 → NOT_FOUND（附「不在活跃名单」提示，不猜合同）。
+    * allow_inactive=True（仅 whl_player_value 使用）：索引唯一命中时返回
+      非活跃占位行（inactive=True、无 id/ca/pa/age/position/合同），由调用方
+      现场拉 meta 后补齐；其他工具保持拒绝语义。
     """
     name = (query or "").strip()
     if not name:
@@ -273,11 +277,46 @@ def resolve_player(
         row = dict(index_rows[0])
         if cache is not None:
             cache.note_miss(name)
+        if allow_inactive:
+            if cache is not None:
+                cache.remember_positive(name, row["display_name"])
+            return {
+                "id": None,
+                "fc_id": row.get("fc_id"),
+                "name": row["display_name"],
+                "display_name": row["display_name"],
+                "club_id": row.get("club_id"),
+                "club_name": row.get("club_name"),
+                "position": None,
+                "age": None,
+                "ca": None,
+                "pa": None,
+                "foot": None,
+                "wage": None,
+                "release_fee": None,
+                "contract_type": None,
+                "status": "free_agent",
+                "active": 0,
+                "inactive": True,
+                "not_for_sale": 0,
+                "protected": 0,
+                "transfer_listed": 0,
+            }
         raise ToolError(
             NOT_FOUND,
             f"「{row['display_name']}」在全联盟名册里存在，但不在当前活跃名单（可能已离盟/退役），没有合同与市场数据",
             data={"name": row["display_name"], "clubName": row.get("club_name")},
             hint="告诉用户该球员目前不在联赛活跃名单里，不要编造合同信息",
+        )
+    if len(index_rows) > 1 and allow_inactive:
+        raise ToolError(
+            AMBIGUOUS,
+            f"全联盟名册里有 {len(index_rows)} 名「{name}」，需要确认是哪一位",
+            candidates=[
+                {"name": r["display_name"], "clubName": r.get("club_name"), "fcId": r.get("fc_id")}
+                for r in index_rows[:_PLAYER_CANDIDATES_MAX]
+            ],
+            hint="把候选列给用户反问；不要默认挑一个",
         )
 
     # 纯中文且缓存/索引都没有 → 群成员？（人名 ≠ 队名，§4.7）

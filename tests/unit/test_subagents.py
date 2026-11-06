@@ -143,6 +143,16 @@ def test_build_specs_advisor_tools_are_exactly_whl_nine():
     assert "【WHL 联赛数据规则】" in specs[0].instructions
 
 
+def test_build_specs_money_rounding_toggle():
+    """round_amounts_to_five 只追加口语化规则，关闭时完全不注入。"""
+    names = _tool_method_names()
+    enabled = subagents.build_specs(whl_tool_names=names, round_amounts_to_five=True)
+    disabled = subagents.build_specs(whl_tool_names=names, round_amounts_to_five=False)
+    assert subagents.MONEY_ROUNDING_RULE in enabled[0].instructions
+    assert subagents.MONEY_ROUNDING_RULE not in disabled[0].instructions
+    assert "5 的倍数" in enabled[0].instructions
+
+
 def test_build_specs_coach_tools_and_skill_body():
     specs = subagents.build_specs(whl_tool_names=_tool_method_names(), coach_skill_body="SKILL 正文标记 XYZ")
     assert len(specs) == 2

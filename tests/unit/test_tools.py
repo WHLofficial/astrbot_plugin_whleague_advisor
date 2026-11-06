@@ -30,7 +30,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def build_tool_ctx(conn, *, allowed=None, limiter=None):
+def build_tool_ctx(conn, *, allowed=None, limiter=None, club=None):
     ctx = context_mod.ToolContext(
         conn=conn,
         config={},
@@ -40,6 +40,7 @@ def build_tool_ctx(conn, *, allowed=None, limiter=None):
         limiter=limiter
         or import_plugin("guard.ratelimit").SlidingRateLimiter(now_fn=lambda: 0.0),
         allowed_groups=allowed,
+        club=club,
     )
     return ctx
 
@@ -678,6 +679,54 @@ class TestPlayerValue:
     def test_not_found(self, ctx):
         env = call(ctx, "whl_player_value", {"name": "Nobody Here"})
         assert env["error"]["code"] == "NOT_FOUND"
+
+    def test_inactive_free_agent_vals_by_attributes(self, conn):
+        """无合同/非活跃球员：索引定位 → 平台 meta → 只算 fair，不编 RC/deal。"""
+        conn.execute(
+            "INSERT INTO player_index (fc_id, display_name, club_id, search_name, updated_at) "
+            "VALUES (?, ?, NULL, ?, ?)",
+            (204935, "Jordan Pickford", "jordan pickford", "2026-11-06T00:00:00+00:00"),
+        )
+
+        class _MetaClub:
+            async def fetch_players_meta(self, fc_ids):
+                assert fc_ids == [204935]
+                return [{
+                    "fc_id": 204935,
+                    "height": 185,
+                    "attrs": {
+                        "CA": 84, "PA": 84, "Age": 31, "PosID1": 0,
+                        "gkreflexes": 87, "gkhandling": 78, "gkpositioning": 81,
+                        "gkdiving": 84, "gkkicking": 88,
+                    },
+                    "playstyles": [13, 51, 52],
+                }]
+
+        try:
+            env = call(
+                build_tool_ctx(conn, club=_MetaClub()),
+                "whl_player_value",
+                {"name": "Jordan Pickford", "detail": True},
+            )
+            assert env["ok"] is True
+            data = env["data"]
+            assert data["player"]["name"] == "Jordan Pickford"
+            assert data["player"]["status"] == "free_agent"
+            assert data["player"]["inactive"] is True
+            assert data["ability"]["level"] == 7
+            assert data["fair"]["mid"] is not None
+            assert data["fair"]["low"] is not None
+            assert data["fair"]["high"] is not None
+            assert data["rc"]["value"] is None
+            assert data["deal"] is None
+            assert "按属性估算参考价" in env["summary"]
+            assert "定违约金参照" in env["summary"]
+            assert "（自由身）" in env["summary"]
+            assert "没有成交区间" not in env["summary"]
+            assert any("无合同" in c for c in env["caveats"])
+            assert any("定违约金" in c for c in env["caveats"])
+        finally:
+            conn.execute("DELETE FROM player_index WHERE fc_id = 204935")
 
 
 # ---- whl_compare_players ----

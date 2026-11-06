@@ -38,6 +38,15 @@ PROMPT_DIR = Path(__file__).resolve().parent / "prompt"
 ADVISOR_PROMPT = "advisor.md"
 COACH_PROMPT = "coach.md"
 
+# 金额口语化（配置 round_amounts_to_five）：只影响“说出口”的非精确金额，
+# 不改工具字段、不改违约金/成交价/工资等事实值。追加到 advisor system_prompt。
+MONEY_ROUNDING_RULE = (
+    "【金额口语化】说估价、参考价、心理价、报价建议等非精确金额时，"
+    "≥5m 的数字尽量用最接近的 5 的倍数表达（如 18→20、23→25、51→50）；"
+    "<5m 保留原数。违约金、实际成交价、工资等工具给出的精确金额不要为了取整而改；"
+    "引用精确值或做差额计算时保留原数。"
+)
+
 HANDOFF_TOOL_PREFIX = "transfer_to_"
 
 # SKILL.md 不可读时的降级指引：子 agent 仍可用（有搜索工具），只是少了宿主自带的核查流程。
@@ -125,16 +134,20 @@ def build_specs(
     whl_tool_names,
     real_football_enabled: bool = True,
     coach_skill_body: str | None = None,
+    round_amounts_to_five: bool = False,
 ) -> tuple[SubagentSpec, ...]:
     """构建两个子 agent 的 spec；real_football_enabled=False 时不注册现实足球子 agent（§8.1）。"""
     advisor_tools = tuple(str(t) for t in whl_tool_names)
     if not advisor_tools:
         raise ValueError("whl_advisor 的工具白名单为空：联赛子 agent 不能没有任何 whl_* 工具")
+    advisor_instructions = read_prompt(ADVISOR_PROMPT)
+    if round_amounts_to_five:
+        advisor_instructions += "\n\n" + MONEY_ROUNDING_RULE
     specs = [
         SubagentSpec(
             name=ADVISOR_AGENT_NAME,
             handoff_name=ADVISOR_HANDOFF_NAME,
-            instructions=read_prompt(ADVISOR_PROMPT),
+            instructions=advisor_instructions,
             tools=advisor_tools,
             public_description=ADVISOR_PUBLIC_DESCRIPTION,
         )

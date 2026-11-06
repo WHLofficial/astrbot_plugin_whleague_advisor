@@ -11,11 +11,15 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from ..guard.ratelimit import SlidingRateLimiter
 from ..identity.client import BindingsClient
 from ..identity.group_members import GroupMembersStore
 from ..identity.translations import TranslationCache
+
+if TYPE_CHECKING:
+    from ..sources.club import ClubSource
 
 # 允许使用工具的群（str 化）；None = 不限群（单测方便）。生产由 enabled_groups 装配。
 DEFAULT_TOOL_BUDGET = {"max_calls": 6, "max_steps": 4, "tool_timeout_ms": 5000}
@@ -32,6 +36,8 @@ class ToolContext:
     allowed_groups: set[str] | None = None
     """允许使用工具的群（str 化）；None = 不限群（单测方便）。生产由 enabled_groups 装配。
     同会话绕过负缓存的状态在 TranslationCache._bypassed（Q11-Q13），不在此处。"""
+    club: "ClubSource | None" = None
+    """平台公开只读客户端；仅无合同/非活跃球员估价需要现场拉 meta。测试可为 None。"""
 
     def group_allowed(self, group_id: str | None) -> bool:
         if self.allowed_groups is None:

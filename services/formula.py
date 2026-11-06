@@ -92,6 +92,23 @@ POSITION_IMAGE_ROLES: dict[str, str] = {
     "ST": "ST",
 }
 
+# FC 位置 ID → 平台位置名。无合同/非活跃球员不在 players 表，只能从
+# /api/players/meta 的 PosID1 推断位置；只覆盖估价需要的常用位置。
+POS_ID_POSITION: dict[int, str] = {
+    0: "GK",
+    3: "RB",
+    5: "CB",
+    7: "LB",
+    10: "CDM",
+    12: "RM",
+    14: "CM",
+    16: "LM",
+    18: "CAM",
+    23: "RW",
+    25: "ST",
+    27: "LW",
+}
+
 # 估价角色组（§5.2：W 暂与中场同组，等 W 公开点 ≥8 再单列）
 IMAGE_ROLE_TO_GROUP: dict[str, str] = {
     "GK": "GK",

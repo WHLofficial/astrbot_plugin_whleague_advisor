@@ -64,5 +64,11 @@
     "hint": "关闭后不注册 transfer_to_real_football_expert（现实/真实足球话题不再由子 agent 查公开资料）；联赛子 agent 不受影响。",
     "type": "bool",
     "default": true
+  },
+  "round_amounts_to_five": {
+    "description": "金额口语化到 5 的倍数",
+    "hint": "开启后，模型说估价、参考价、心理价、报价建议等非精确金额时，≥5m 的数字尽量取最接近的 5 的倍数（如 18→20、23→25、51→50）；<5m 保留原数。违约金、实际成交价、工资等工具给出的精确金额不为了取整而改。",
+    "type": "bool",
+    "default": false
   }
 }

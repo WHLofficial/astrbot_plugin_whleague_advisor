@@ -9,8 +9,14 @@ from __future__ import annotations
 
 from ..advice import valuation as valuation_advice
 from ..db import dao
-from ..guard.errors import NO_DATA, ToolError, ok_envelope
-from ..services.scores import assemble_value_data
+from ..guard.errors import BAD_ARG, NO_DATA, ToolError, ok_envelope
+from ..services.formula import POS_ID_POSITION
+from ..services.scores import (
+    assemble_value_data,
+    compute_baseline,
+    evaluate_player,
+    published_model_context,
+)
 from .context import CallContext, ToolContext
 from .freshness import ensure_not_hard_stale, stale_report
 from .insights import age_signal
@@ -31,6 +37,150 @@ _RC_TEXT = {
 }
 
 
+def _meta_int(attrs: dict, key: str) -> int | None:
+    value = attrs.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _position_from_meta(attrs: dict) -> str | None:
+    """meta 的 PosID1→位置；PosID1 缺失时依次看 PosID2–4。"""
+    for key in ("PosID1", "PosID2", "PosID3", "PosID4"):
+        pos_id = _meta_int(attrs, key)
+        if pos_id is not None and pos_id >= 0:
+            position = POS_ID_POSITION.get(pos_id)
+            if position:
+                return position
+    return None
+
+
+async def _inactive_value(
+    ctx: ToolContext,
+    call: CallContext,
+    player: dict,
+    *,
+    report: dict,
+    detail: bool,
+    assumptions: dict,
+) -> dict:
+    """无合同/非活跃球员：按平台属性现场算 fair，不伪造 RC/工资/成交区间。
+
+    只在 whl_player_value 使用；球员来自 player_index，players/player_scores 里没有，
+    因此必须按 fc_id 拉一次 /api/players/meta（CA/PA/年龄/位置），再复用
+    evaluate_player + 已发布模型，保证与活跃球员同一价格曲线。
+    """
+    if assumptions:
+        raise ToolError(
+            BAD_ARG,
+            "无合同球员暂不支持假设场景（没有合同/成交数据可套用预算与 RC 约束）",
+            hint="直接问参考价即可；不要编造合同或可成交区间",
+        )
+    fc_id = player.get("fc_id")
+    if fc_id is None:
+        raise ToolError(NO_DATA, "这名球员没有 fc_id，无法拉取属性", hint="不要编造价格")
+    if ctx.club is None:
+        raise ToolError(
+            NO_DATA,
+            "无合同球员估价需要在线查询平台属性，但当前数据源未装配",
+            hint="不要编造价格；说明暂时只能查活跃名单",
+        )
+    try:
+        metas = await ctx.club.fetch_players_meta([int(fc_id)])
+    except Exception as exc:  # noqa: BLE001 - 网络/契约异常统一降级为 NO_DATA
+        raise ToolError(
+            NO_DATA,
+            f"拉取 {player.get('display_name') or player.get('name')} 的平台属性失败：{exc}",
+            hint="不要编造价格；稍后重试或让用户确认球员是否仍在联盟",
+        ) from None
+    if not metas:
+        raise ToolError(
+            NO_DATA,
+            f"平台 meta 没有 {player.get('display_name') or player.get('name')} 的属性",
+            hint="不要编造价格；说明该球员暂无属性数据",
+        )
+    attrs = metas[0].get("attrs")
+    if not isinstance(attrs, dict):
+        raise ToolError(NO_DATA, "平台 meta 属性格式异常", hint="不要编造价格")
+    ca = _meta_int(attrs, "CA")
+    pa = _meta_int(attrs, "PA")
+    age = _meta_int(attrs, "Age")
+    position = _position_from_meta(attrs)
+    if ca is None or pa is None or age is None or position is None:
+        raise ToolError(
+            NO_DATA,
+            "平台属性缺少 CA/PA/年龄/位置，无法按属性估价",
+            hint="不要编造价格；说明该球员属性不完整",
+        )
+
+    synthetic = dict(player)
+    synthetic.update({"ca": ca, "pa": pa, "age": age, "position": position})
+
+    players = dao.read_active_players(ctx.conn)
+    attrs_rows = dao.read_player_attrs(ctx.conn)
+    attrs_by_fc = {r["fc_id"]: r["attrs"] for r in attrs_rows if r.get("attrs")}
+    baseline = compute_baseline(players, attrs_by_fc)
+    model, _ = published_model_context(ctx.conn)
+    row = evaluate_player(synthetic, attrs, baseline, model)
+    if row.get("fair_mid") is None:
+        raise ToolError(
+            NO_DATA,
+            "现有价格曲线无法为这名球员算出参考价（位置/能力等级缺失）",
+            hint="不要编造价格；只说明属性估价不可用",
+        )
+    row["model_version"] = model.version
+    row["as_of"] = ctx.now().isoformat(timespec="seconds")
+    data = assemble_value_data(row, dao.read_all_model_params(ctx.conn))
+    data["player"] = {
+        "id": None,
+        "name": player.get("display_name") or player.get("name"),
+        "clubName": None,
+        "position": position,
+        "age": age,
+        "status": "free_agent",
+        "inactive": True,
+    }
+
+    caveats = [
+        "无合同/非活跃球员：按平台属性（CA/PA/年龄/位置）估算参考价；"
+        "没有违约金、工资和成交区间，不能当作可成交价。",
+        "参考区间可作为定违约金的参照；最终违约金由俱乐部/联盟规则确定，"
+        "不是模型自动生成的违约金。",
+        "位置/角色按当前平台 meta 推断，可能与历史成交时不同。",
+    ]
+    caveats.extend(model_annotation_caveats(ctx.conn, detail=detail))
+    caveats.extend(report["caveats"])
+    fair = data.get("fair") or {}
+    fair_low = fair.get("low")
+    fair_mid = fair.get("mid")
+    fair_high = fair.get("high")
+    if fair_low is not None and fair_high is not None and fair_mid is not None:
+        price_text = f"{fair_low:g}–{fair_high:g}m（中位 {fair_mid:g}m）"
+    elif fair_mid is not None:
+        price_text = f"{fair_mid:g}m"
+    else:
+        price_text = "暂缺"
+    name = data["player"]["name"]
+    summary = (
+        f"{name}：按属性估算参考价 {price_text}，可作为定违约金参照"
+        "（自由身）。"
+    )
+    payload = data if detail else _compact_data(data)
+    return ok_envelope(
+        as_of=report["as_of"],
+        source=["player_meta", "model"],
+        summary=summary,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
+        caveats=caveats,
+        stale=report["stale"],
+        hint="这是按属性估算的定违约金参考，不是合同/成交价；不要编造违约金数值、工资或可成交区间",
+    )
+
+
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     report = stale_report(ctx.conn, ("players", "market", "scores"), ctx.now())
     assumptions = args.get("assumptions") or {}
@@ -41,7 +191,12 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         player = resolve_player(
             ctx.conn, args["name"], cache=ctx.translations,
             members=ctx.members, group_id=call.group_id, session_id=call.session_id,
+            allow_inactive=True,
         )
+        if player.get("inactive"):
+            return await _inactive_value(
+                ctx, call, player, report=report, detail=detail, assumptions=assumptions,
+            )
         row = next((r for r in dao.read_player_scores(ctx.conn) if r["player_id"] == player["id"]), None)
         if row is None:
             raise ToolError(
@@ -58,7 +213,14 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         player = resolve_player(
             ctx.conn, args["name"], cache=ctx.translations,
             members=ctx.members, group_id=call.group_id, session_id=call.session_id,
+            allow_inactive=True,
         )
+        if player.get("inactive"):
+            raise ToolError(
+                BAD_ARG,
+                "无合同球员暂不支持假设场景（没有合同/成交数据可套用预算与 RC 约束）",
+                hint="直接问参考价即可；不要编造合同或可成交区间",
+            )
         from ..services import scores as scores_svc
         from ..services.scores import compute_baseline
 

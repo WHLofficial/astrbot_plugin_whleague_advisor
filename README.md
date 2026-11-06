@@ -2,7 +2,7 @@
 
 WHL 联赛只读问答顾问插件（AstrBot v4）：群里有人问联赛积分、球队、球员、转会市场或估价参考时，主模型调用本插件注册的 `whl_*` 工具作答，回答中的每个数字都能对回工具结果。术语以 [GLOSSARY.md](GLOSSARY.md) 为准；平台规则词以平台 `GLOSSARY.md` 为准。
 
-> 当前为 v0.8.1：插件壳、`/whl状态` 状态指令 + 数据层（本地 SQLite，十个同步任务：赛季/俱乐部/球员/属性/市场/历史成交/估价模型/名册/积分榜/赛程，失败降级保留旧值）+ 9 个 `whl_*` 问答工具（LLM FunctionTool，含转会匹配测算）、`advice/` 估价纯函数、群成员缓存与绑定客户端、限流与入参守卫、统一错误码 + 两个 handoff 子 agent（联赛顾问 / 现实足球）。
+> 当前为 v0.8.2：插件壳、`/whl状态` 状态指令 + 数据层（本地 SQLite，十个同步任务：赛季/俱乐部/球员/属性/市场/历史成交/估价模型/名册/积分榜/赛程，失败降级保留旧值）+ 9 个 `whl_*` 问答工具（LLM FunctionTool，含转会匹配测算）、`advice/` 估价纯函数、群成员缓存与绑定客户端、限流与入参守卫、统一错误码 + 两个 handoff 子 agent（联赛顾问 / 现实足球）。
 
 ## 默认空转（重要）
 
@@ -43,6 +43,7 @@ astrbot plugin install https://github.com/WHLofficial/astrbot_plugin_whleague_ad
 | `rate_group_limit` | int | `30` | 每群查询上限（次/10 分钟），超出返回 `RATE_LIMITED` |
 | `rate_user_limit` | int | `10` | 每人查询上限（次/10 分钟），超出返回 `RATE_LIMITED` |
 | `real_football_enabled` | bool | `true` | 关闭后不注册现实足球子 agent（联赛子 agent 不受影响） |
+| `round_amounts_to_five` | bool | `false` | 开启后模型说非精确金额（估价/参考价/报价建议）且 ≥5m 时，尽量取最接近的 5 的倍数；违约金、实际成交价、工资等精确值不改 |
 
 ## 子 agent（handoff，配置齐备时自动注册）
 

@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.1）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.2）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,12 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.2 自由身估价与金额口语化：
+- whl_player_value 支持无合同/非活跃球员：player_index 定位后实时读取平台
+  meta，按属性复用同一估价曲线给出参考价；自由身不伪造 RC/工资/成交区间；
+- 新增 round_amounts_to_five 配置（默认关闭）：开启后模型说非精确金额
+  且 ≥5m 时尽量取最接近的 5 的倍数，精确的 RC/成交/工资不改。
 
 v0.8.1 估价新鲜度修复：
 - market 新鲜度改用同步成功时间，避免 deals 内容未变时 updated_at 停滞
@@ -194,6 +200,7 @@ class WhleagueAdvisorPlugin(Star):
                 user_limit=int(self._positive_number("rate_user_limit", 10)),
             ),
             allowed_groups=allowed or None,
+            club=club,
         )
         # 先装配后启动：装配中途抛异常时调度器从未启动，initialize 的
         # 「保持加载但不做同步」兜底才真实成立（原顺序会在异常路径漏停后台同步）
@@ -284,6 +291,7 @@ class WhleagueAdvisorPlugin(Star):
                 whl_tool_names=TOOL_METHOD_NAMES,
                 real_football_enabled=self._flag("real_football_enabled", True),
                 coach_skill_body=skill_body,
+                round_amounts_to_five=self._flag("round_amounts_to_five", False),
             )
         except Exception:
             logger.exception("%s：子 agent spec 构建失败，不注册 handoff", PLUGIN_NAME)

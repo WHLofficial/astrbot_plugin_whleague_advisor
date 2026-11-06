@@ -2,6 +2,21 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.2] - 2026-11-06
+
+### Added
+
+- `whl_player_value` 支持无合同/非活跃球员：通过 `player_index` 定位并实时读取平台 meta，按属性复用同一估价曲线给出参考价；自由身不伪造 RC、工资或成交区间，参考区间明确为定违约金参照。
+- 新增 `round_amounts_to_five` 配置（默认 `false`）：开启后，模型说估价、参考价、报价建议等非精确金额且 ≥5m 时，尽量取最接近的 5 的倍数；违约金、实际成交价、工资等精确值不取整。
+
+### Changed
+
+- 无合同球员估价输出使用“自由身”口径，参考区间仅作为定违约金参照。
+
+### Fixed
+
+- 修复 `resolve_player` 只查活跃名单、导致无合同球员直接 `NOT_FOUND` 的问题；其他工具保持原有拒绝语义。
+
 ## [0.8.1] - 2026-11-06
 
 ### Fixed
@@ -68,6 +83,7 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.2]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.2
 [0.8.1]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.1
 [0.8.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.0
 [0.7.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.7.0
