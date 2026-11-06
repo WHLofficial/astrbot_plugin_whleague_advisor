@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.7.0）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.0）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,11 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.0 模型重拟合与质量门禁：
+- 估价只认 transfer/activation/forced_auction 的真实成交，广告板/挂牌只展示；
+- 真实成交历史回填、候选/门禁/回滚、管理员命令与状态报告；
+- Ridge/Huber 正则化，市场同步后触发拟合；旧模型/实验模型明确标注。
 
 v0.7.0 身份预注入与口语化：
 - LLM 请求前注入发送者绑定球队，未知时要求先查 scope=me 或反问；

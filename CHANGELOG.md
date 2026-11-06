@@ -2,6 +2,26 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.0] - 2026-11-06
+
+### Added
+
+- 估价模型改用真实成交：仅 `transfer` / `activation` / `forced_auction` 的 `fee` 入模，广告板与挂牌只展示不进回归；剔除 trainee，按赛季做时间衰减（半衰期 3 赛季）。
+- 模型质量门禁与候选流程：`n>=20`、CB/FB/MF/FW 每角色 `>=4`、`R²>=0.65`、斜率为正、角色系数边界、LOO 不劣于设计默认；11–19 点只进 shadow；自动发布带旧模型 5% 护栏。
+- 管理员 `whl模型通过` / `whl模型拒绝` / `whl模型回滚` / `whl模型force`；`whl状态` 展示最新候选与最近 3 次报告；连续 3 次拒绝标记模型降级。
+- 平台历史成交游标分页与插件 `deals_history` 回填；`deals` 改 upsert 保留历史；成交快照 `player_level/player_role/snapshot_source/snapshot_at`，历史点标 `current_backfill`。
+- Phase 4 Ridge/Huber 正则化与 LOO λ 选择；市场或历史成交同步成功后触发 `scores`，60 分钟兜底。
+
+### Changed
+
+- 估价回答对旧口径模型、实验模型与正常发布模型给出明确标注。
+- 调度器在 `market` / `deals_history` 成功后把 `scores` 拉前执行，不再固定等 60 分钟。
+
+### Fixed
+
+- 修复真实成交样本被广告板标价稀释、角色样本不足仍尝试发布的问题。
+- 修复历史成交被热同步覆盖、候选重复生成与旧模型护栏状态不一致的问题。
+
 ## [0.7.0] - 2026-11-06
 
 ### Added
@@ -42,5 +62,6 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.0
 [0.7.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.7.0
 [0.6.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.6.0
