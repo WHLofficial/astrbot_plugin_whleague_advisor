@@ -407,15 +407,60 @@ class TestPlayerLookup:
         finally:
             conn.execute("DELETE FROM players WHERE id = 9999")
 
-    def test_index_only_hit_is_not_found_not_fabricated(self, conn):
-        """全联盟索引有、活跃名单没有 → NOT_FOUND（有提示），不编合同。"""
+    def test_index_only_hit_returns_free_agent_without_meta(self, conn):
+        """全联盟索引有、活跃名单没有 → 仍可查身份；无 meta 时不编造能力/合同。"""
         dao.replace_player_index(
             conn, [{"fc_id": 777001, "display_name": "Retired Guy", "club_id": 9,
                     "search_name": "retired guy"}], "2026-11-05T00:00:00+00:00"
         )
         env = call(build_tool_ctx(conn), "whl_player_lookup", {"name": "Retired Guy"})
-        assert env["error"]["code"] == "NOT_FOUND"
-        assert "活跃名单" in env["error"]["message"]
+        assert env["ok"] is True
+        assert env["data"]["player"]["name"] == "Retired Guy"
+        assert env["data"]["player"]["status"] == "free_agent"
+        assert env["data"]["player"]["inactive"] is True
+        assert env["data"]["facts"]["releaseFee"] is None
+        assert "自由身" in env["summary"]
+        assert any("平台客户端" in c or "属性" in c for c in env["caveats"])
+
+    def test_inactive_lookup_uses_platform_meta(self, conn):
+        """索引命中后按平台 meta 补位置/年龄/CA/PA；没有合同与估价。"""
+        conn.execute(
+            "INSERT INTO player_index (fc_id, display_name, club_id, search_name, updated_at) "
+            "VALUES (?, ?, NULL, ?, ?)",
+            (204935, "Jordan Pickford", "jordan pickford", "2026-11-06T00:00:00+00:00"),
+        )
+
+        class _MetaClub:
+            async def fetch_players_meta(self, fc_ids):
+                assert fc_ids == [204935]
+                return [{
+                    "fc_id": 204935,
+                    "attrs": {
+                        "CA": 84, "PA": 84, "Age": 31, "PosID1": 0,
+                        "gkreflexes": 87, "gkhandling": 78, "gkpositioning": 81,
+                        "gkdiving": 84, "gkkicking": 88,
+                    },
+                }]
+
+        try:
+            env = call(
+                build_tool_ctx(conn, club=_MetaClub()),
+                "whl_player_lookup",
+                {"name": "Jordan Pickford", "detail": True},
+            )
+            assert env["ok"] is True
+            data = env["data"]
+            assert data["player"]["position"] == "GK"
+            assert data["player"]["age"] == 31
+            assert data["player"]["clubName"] is None
+            assert data["player"]["status"] == "free_agent"
+            assert data["contract"]["releaseFee"] is None
+            assert data["contract"]["wage"] is None
+            assert data["ability"]["level"] == 7
+            assert "player_meta" in env["source"]
+            assert "自由身" in env["summary"]
+        finally:
+            conn.execute("DELETE FROM player_index WHERE fc_id = 204935")
 
     def test_missing_name_is_bad_arg(self, ctx):
         env = call(ctx, "whl_player_lookup", {})
@@ -963,6 +1008,14 @@ class TestSenderIdentity:
         line = preflight.identity_line({"name": "WH", "qq": "1624687632", "via": "unknown"})
         assert "绑定球队：未知" in line
         assert 'whl_team_brief(scope="me")' in line
+
+    def test_price_freshness_line_requires_recheck(self):
+        preflight = import_plugin("identity.preflight")
+        line = preflight.price_freshness_line()
+        assert "【估价必须重查】" in line
+        assert "whl_player_value" in line
+        assert "历史消息" in line
+        assert "不得直接复用" in line
 
     def test_resolve_sender_identity_uses_local_binding(self, ctx):
         ctx.members.apply_bindings(

@@ -109,6 +109,29 @@ POS_ID_POSITION: dict[int, str] = {
     27: "LW",
 }
 
+
+def meta_int(attrs: dict, key: str) -> int | None:
+    """平台 meta 字段转 int；缺失/布尔/脏值返回 None。"""
+    value = attrs.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def position_from_meta(attrs: dict) -> str | None:
+    """meta 的 PosID1→位置；PosID1 缺失时依次看 PosID2–4。"""
+    for key in ("PosID1", "PosID2", "PosID3", "PosID4"):
+        pos_id = meta_int(attrs, key)
+        if pos_id is not None and pos_id >= 0:
+            position = POS_ID_POSITION.get(pos_id)
+            if position:
+                return position
+    return None
+
+
 # 估价角色组（§5.2：W 暂与中场同组，等 W 公开点 ≥8 再单列）
 IMAGE_ROLE_TO_GROUP: dict[str, str] = {
     "GK": "GK",

@@ -2,6 +2,18 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.3] - 2026-11-06
+
+### Added
+
+- `whl_player_lookup` 支持无合同/非活跃球员：通过全联盟索引定位后实时读取平台 meta，补能力等级、位置与画像；不伪造合同、工资或违约金。
+- 新增“估价必须重查”请求预注入：问具体球员的估价、合同或匹配机会时，本轮必须重新调用工具，不能复用历史对话里的旧价格；主 agent 与 advisor 子 agent 均覆盖。
+
+### Fixed
+
+- 修复非活跃球员 lookup 直接 `NOT_FOUND` 的问题。
+- 修复 `meta_int` / `position_from_meta` 在估价与画像路径重复实现、value 侧引用错误的问题。
+
 ## [0.8.2] - 2026-11-06
 
 ### Added
@@ -83,6 +95,7 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.3]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.3
 [0.8.2]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.2
 [0.8.1]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.1
 [0.8.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.0

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ..db import dao
 from ..guard.errors import ok_envelope
+from ..services.formula import ability_level, image_role, meta_int, position_from_meta
 from .context import CallContext, ToolContext
 from .freshness import stale_report
 from .insights import age_signal
@@ -26,7 +27,10 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         members=ctx.members,
         group_id=call.group_id,
         session_id=call.session_id,
+        allow_inactive=True,
     )
+    if player.get("inactive"):
+        return await _inactive_lookup(ctx, player, detail=bool(args.get("detail")))
     attrs_row = _attrs_of(ctx.conn, player.get("fc_id"))
     attrs = (attrs_row or {}).get("attrs") or {}
     score = dao.read_player_scores(ctx.conn)
@@ -112,6 +116,118 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     )
 
 
+async def _inactive_lookup(ctx: ToolContext, player: dict, *, detail: bool) -> dict:
+    """全联盟索引里的非活跃/自由身球员：身份照常返回，属性按平台 meta 现查。
+
+    这类球员不在 players/player_scores 里，不能报合同/工资/估价；
+    平台属性可用时给能力等级与画像，meta 不可用时只报身份，绝不编造。
+    """
+    name = player.get("display_name") or player.get("name")
+    fc_id = player.get("fc_id")
+    attrs: dict = {}
+    caveats: list[str] = [
+        "非活跃/自由身球员：身份来自全联盟索引，能力/位置按当前平台 meta 推断；"
+        "没有合同、违约金、工资数据，不要编造。",
+    ]
+    if fc_id is None:
+        caveats.append("这名球员没有 fc_id，无法拉取平台属性。")
+    elif ctx.club is None:
+        caveats.append("当前未装配平台客户端，无法拉取属性，只能报身份。")
+    else:
+        try:
+            metas = await ctx.club.fetch_players_meta([int(fc_id)])
+        except Exception:  # noqa: BLE001 - 查询失败降级为身份信息，不影响 lookup
+            metas = []
+            caveats.append("平台属性暂时拉取失败，只能报身份；不要编造能力值。")
+        if metas and isinstance(metas[0].get("attrs"), dict):
+            attrs = metas[0]["attrs"]
+        elif metas:
+            caveats.append("平台 meta 没有可用属性，只能报身份。")
+
+    ca = meta_int(attrs, "CA")
+    pa = meta_int(attrs, "PA")
+    age = meta_int(attrs, "Age")
+    position = position_from_meta(attrs)
+    level = (
+        ability_level(ca, pa if pa is not None else ca, age)
+        if ca is not None and age is not None
+        else None
+    )
+    data: dict = {
+        "player": {
+            "id": None,
+            "name": name,
+            "clubId": None,
+            "clubName": None,
+            "position": position,
+            "age": age,
+            "foot": None,
+            "status": "free_agent",
+            "inactive": True,
+        },
+        "contract": {
+            "releaseFee": None,
+            "wage": None,
+            "contractType": None,
+            "protected": False,
+            "notForSale": False,
+            "transferListed": False,
+            "listPrice": None,
+        },
+    }
+    if attrs:
+        from ..services.scores import compute_profile
+
+        image = image_role(position)
+        profile = compute_profile(attrs, image, _baseline(ctx)) if image else None
+        data["ability"] = {
+            "level": level,
+            "ca": ca,
+            "pa": pa,
+            "profileScore": profile.get("profile_score") if profile else None,
+            "strengths": profile.get("strengths") if profile else [],
+            "weaknesses": profile.get("weaknesses") if profile else [],
+        }
+        if detail:
+            from ..advice.strength import full_percentiles
+
+            percentiles = (
+                full_percentiles(attrs, position, _baseline(ctx)) if position else []
+            )
+            data["ability"]["percentiles"] = percentiles
+            if not percentiles:
+                caveats.append("该位置暂无属性参考分布，无法给出百分位")
+    elif fc_id is not None:
+        caveats.append("属性包暂不可用，无法给出能力等级或百分位。")
+
+    report = stale_report(ctx.conn, ("players", "attrs", "scores"), ctx.now())
+    caveats.extend(report["caveats"])
+    if detail:
+        summary = (
+            f"{name}：无俱乐部，{position or '位置未知'}，{age if age is not None else '?'} 岁"
+        )
+        if level is not None:
+            summary += f"，能力等级 {level:g}（CA（当前能力） {ca}/PA（潜力） {pa}）"
+        summary += "，自由身（无违约金）。"
+        payload = data
+    else:
+        summary = (
+            f"{name}：无俱乐部，{position or '位置未知'}，{age if age is not None else '?'} 岁，"
+            "自由身（无违约金）。"
+        )
+        payload = _compact_data(data)
+    return ok_envelope(
+        as_of=report["as_of"],
+        source=["player_index", "player_meta"] if attrs else ["player_index"],
+        summary=summary,
+        data=payload,
+        presentation=None if detail else PRESENTATION,
+        caveats=caveats,
+        stale=report["stale"],
+        hint="问估价用 whl_player_value；这是非活跃/自由身球员，不要编造合同、工资或违约金",
+    )
+
+
 def _compact_data(full: dict) -> dict:
     """默认只给判断素材：定位/合同要点 + 年龄、强项、短板、工资、合同状态。"""
     player = full["player"]
@@ -136,6 +252,8 @@ def _compact_data(full: dict) -> dict:
             "clubName": player.get("clubName"),
             "position": player.get("position"),
             "age": player.get("age"),
+            "status": player.get("status"),
+            **({"inactive": True} if player.get("inactive") else {}),
         },
         "facts": {
             "level": ability.get("level"),

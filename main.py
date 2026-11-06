@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.2）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.3）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,10 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.3 非活跃球员查询与估价重查：
+- whl_player_lookup 支持无合同/非活跃球员，按平台 meta 补能力画像；
+- 新增“估价必须重查”预注入，禁止模型复用历史旧价。
 
 v0.8.2 自由身估价与金额口语化：
 - whl_player_value 支持无合同/非活跃球员：player_index 定位后实时读取平台
@@ -396,6 +400,26 @@ class WhleagueAdvisorPlugin(Star):
             logger.debug("%s：发送者身份预注入失败（群 %s）", PLUGIN_NAME, group_id, exc_info=True)
             return
         req.system_prompt = prompt.rstrip() + "\n\n" + identity_line(identity)
+
+    # ---- 估价必须重查（避免模型复用历史旧价）----
+
+    @filter.on_llm_request()
+    async def inject_price_freshness(self, event: AstrMessageEvent, req):
+        """价格事实每轮重查：模型/市场数据更新后，历史对话里的旧估价不可复用。"""
+        ctx = self._tool_ctx
+        if ctx is None:
+            return
+        group_id = _safe_group_id(event)
+        if not group_id or not ctx.group_allowed(group_id):
+            return
+        prompt = getattr(req, "system_prompt", None)
+        if not isinstance(prompt, str):
+            return
+        from .identity.preflight import PRICE_FRESHNESS_MARKER, price_freshness_line
+
+        if PRICE_FRESHNESS_MARKER in prompt:
+            return
+        req.system_prompt = prompt.rstrip() + "\n\n" + price_freshness_line()
 
     # ---- 9 个 whl_* 工具（AstrBot LLM FunctionTool）----
 

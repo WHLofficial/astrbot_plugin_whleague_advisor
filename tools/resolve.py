@@ -236,8 +236,8 @@ def resolve_player(
       群成员也没有 → NOT_FOUND + hint「请现译成拉丁名」（Q7，模型下一轮带拉丁名重调）；
     * 拉丁名：精确 → 前缀 → 子串；多命中 AMBIGUOUS（≤5 候选带 clubName/position/age）；
       活跃名单无、全联盟索引有 → NOT_FOUND（附「不在活跃名单」提示，不猜合同）。
-    * allow_inactive=True（仅 whl_player_value 使用）：索引唯一命中时返回
-      非活跃占位行（inactive=True、无 id/ca/pa/age/position/合同），由调用方
+    * allow_inactive=True（whl_player_value / whl_player_lookup 使用）：索引唯一命中时
+      返回非活跃占位行（inactive=True、无 id/ca/pa/age/position/合同），由调用方
       现场拉 meta 后补齐；其他工具保持拒绝语义。
     """
     name = (query or "").strip()

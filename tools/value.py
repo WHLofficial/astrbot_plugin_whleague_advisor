@@ -10,7 +10,7 @@ from __future__ import annotations
 from ..advice import valuation as valuation_advice
 from ..db import dao
 from ..guard.errors import BAD_ARG, NO_DATA, ToolError, ok_envelope
-from ..services.formula import POS_ID_POSITION
+from ..services.formula import meta_int, position_from_meta
 from ..services.scores import (
     assemble_value_data,
     compute_baseline,
@@ -35,27 +35,6 @@ _RC_TEXT = {
     "rc_capped": "违约金封顶（高端卖不到参考价）",
     "rc_fair": "违约金不挡价",
 }
-
-
-def _meta_int(attrs: dict, key: str) -> int | None:
-    value = attrs.get(key)
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _position_from_meta(attrs: dict) -> str | None:
-    """meta 的 PosID1→位置；PosID1 缺失时依次看 PosID2–4。"""
-    for key in ("PosID1", "PosID2", "PosID3", "PosID4"):
-        pos_id = _meta_int(attrs, key)
-        if pos_id is not None and pos_id >= 0:
-            position = POS_ID_POSITION.get(pos_id)
-            if position:
-                return position
-    return None
 
 
 async def _inactive_value(
@@ -105,10 +84,10 @@ async def _inactive_value(
     attrs = metas[0].get("attrs")
     if not isinstance(attrs, dict):
         raise ToolError(NO_DATA, "平台 meta 属性格式异常", hint="不要编造价格")
-    ca = _meta_int(attrs, "CA")
-    pa = _meta_int(attrs, "PA")
-    age = _meta_int(attrs, "Age")
-    position = _position_from_meta(attrs)
+    ca = meta_int(attrs, "CA")
+    pa = meta_int(attrs, "PA")
+    age = meta_int(attrs, "Age")
+    position = position_from_meta(attrs)
     if ca is None or pa is None or age is None or position is None:
         raise ToolError(
             NO_DATA,
