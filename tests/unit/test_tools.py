@@ -647,6 +647,17 @@ class TestPlayerValue:
         assert env["presentation"] and "不要念数字清单" in env["presentation"]
         assert "fair" not in data and "deal" not in data
 
+    def test_rounding_rule_added_to_tool_presentation(self, ctx):
+        """配置开启时，工具返回的 presentation 也要带取整规则；data 数值不改。"""
+        ctx.config["round_amounts_to_five"] = True
+        try:
+            env = call(ctx, "whl_player_value", {"name": "Harry Kane", "detail": True})
+        finally:
+            ctx.config.pop("round_amounts_to_five", None)
+        assert env["ok"] is True
+        assert env["presentation"] and "5 的倍数" in env["presentation"]
+        assert env["data"]["fair"]["mid"] is not None
+
     def test_baseline_shape_and_summary_contract(self, ctx):
         """§5.5 形状锁 + summary 五要素（市场参考/RC/可成交/RC 状态/置信度）。"""
         env = call(ctx, "whl_player_value", {"name": "Harry Kane", "detail": True})

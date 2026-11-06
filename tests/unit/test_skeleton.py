@@ -202,7 +202,7 @@ def test_metadata_yaml_parses_and_name_correct():
     assert metadata["name"] == EXPECTED_NAME
     for field in METADATA_REQUIRED_FIELDS:
         assert isinstance(metadata.get(field), str) and metadata[field].strip(), field
-    assert metadata["version"] == "0.8.3"
+    assert metadata["version"] == "0.8.4"
     assert metadata["support_platforms"] == ["aiocqhttp"]
     assert metadata["astrbot_version"] == ">=4,<5"
     assert metadata["repo"].startswith("https://github.com/")

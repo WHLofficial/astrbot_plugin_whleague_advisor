@@ -221,6 +221,32 @@ class _RecordingContext:
         self.added.extend(tools)
 
 
+def test_main_agent_injects_money_rounding_when_enabled():
+    """主 agent 直调工具时也必须看到取整规则；此前只注入 advisor 子 agent。"""
+    from types import SimpleNamespace
+
+    from test_llm_registration import _FakeEvent
+
+    plugin = _plugin(_RecordingContext(), {"round_amounts_to_five": True})
+    plugin._tool_ctx = SimpleNamespace(group_allowed=lambda _gid: True)
+
+    class _Req:
+        system_prompt = "base prompt"
+
+    req = _Req()
+    asyncio.run(plugin.inject_money_rounding(_FakeEvent(), req))
+    assert "5 的倍数" in req.system_prompt
+    # 重复请求不重复追加
+    asyncio.run(plugin.inject_money_rounding(_FakeEvent(), req))
+    assert req.system_prompt.count("【金额口语化】") == 1
+
+    off_plugin = _plugin(_RecordingContext(), {"round_amounts_to_five": False})
+    off_plugin._tool_ctx = SimpleNamespace(group_allowed=lambda _gid: True)
+    off_req = _Req()
+    asyncio.run(off_plugin.inject_money_rounding(_FakeEvent(), off_req))
+    assert "5 的倍数" not in off_req.system_prompt
+
+
 def test_deactivatable_names_include_handoffs():
     from test_llm_registration import _load_main
 

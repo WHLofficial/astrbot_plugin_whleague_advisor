@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.3）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.4）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,10 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.4 金额取整修复：
+- round_amounts_to_five 同时注入主 agent 与金额类工具 presentation；
+  此前只进 advisor 子 agent，主 agent 直调工具时不生效；数值本身不改。
 
 v0.8.3 非活跃球员查询与估价重查：
 - whl_player_lookup 支持无合同/非活跃球员，按平台 meta 补能力画像；
@@ -420,6 +424,28 @@ class WhleagueAdvisorPlugin(Star):
         if PRICE_FRESHNESS_MARKER in prompt:
             return
         req.system_prompt = prompt.rstrip() + "\n\n" + price_freshness_line()
+
+    # ---- 金额取整（配置 round_amounts_to_five；主 agent 直调工具也要生效）----
+
+    @filter.on_llm_request()
+    async def inject_money_rounding(self, event: AstrMessageEvent, req):
+        """主 agent 直接回答时也注入金额口语化规则；子 agent 由 build_specs 注入。"""
+        ctx = self._tool_ctx
+        if ctx is None:
+            return
+        if not self._flag("round_amounts_to_five", False):
+            return
+        group_id = _safe_group_id(event)
+        if not group_id or not ctx.group_allowed(group_id):
+            return
+        prompt = getattr(req, "system_prompt", None)
+        if not isinstance(prompt, str):
+            return
+        from .subagents import MONEY_ROUNDING_RULE
+
+        if MONEY_ROUNDING_RULE in prompt:
+            return
+        req.system_prompt = prompt.rstrip() + "\n\n" + MONEY_ROUNDING_RULE
 
     # ---- 9 个 whl_* 工具（AstrBot LLM FunctionTool）----
 

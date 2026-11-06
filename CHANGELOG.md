@@ -2,6 +2,13 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.4] - 2026-11-06
+
+### Fixed
+
+- 修复 `round_amounts_to_five` 只注入 advisor 子 agent、主 agent 直调工具时不生效的问题。
+- 主 agent 请求与金额类工具的 `presentation` 现在都会带金额口语化规则；工具返回的估价/RC/工资等精确数值本身不改。
+
 ## [0.8.3] - 2026-11-06
 
 ### Added
@@ -95,6 +102,7 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.4]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.4
 [0.8.3]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.3
 [0.8.2]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.2
 [0.8.1]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.1

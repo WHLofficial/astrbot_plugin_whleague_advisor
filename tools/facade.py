@@ -50,6 +50,25 @@ TOOLS: dict[str, tuple[object, dict]] = {
 
 TOOL_NAMES = tuple(TOOLS)
 
+# 这些工具会直接给出金额/估价，配置开启时在 presentation 里重复一次取整规则。
+MONEY_ROUNDING_TOOLS = {
+    "whl_team_brief",
+    "whl_market_board",
+    "whl_player_value",
+    "whl_transfer_match",
+    "whl_compare_players",
+}
+
+
+def _config_flag(ctx: ToolContext, key: str, default: bool = False) -> bool:
+    """与 main._flag 同口径：WebUI 可能把布尔存成字符串。"""
+    value = ctx.config.get(key)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off", "否", "关")
+    return bool(value)
+
 
 async def call_tool(ctx: ToolContext, name: str, args: dict, call: CallContext) -> str:
     """单个工具调用：守卫全走一遍，永远返回 JSON 字符串（绝不向模型抛异常）。"""
@@ -71,7 +90,7 @@ async def call_tool(ctx: ToolContext, name: str, args: dict, call: CallContext) 
         result = module.run(ctx, call, normalized)
         if inspect.isawaitable(result):
             result = await result
-        env = _finalize(ctx, result)
+        env = _finalize(ctx, result, name)
         logger.info("tool=%s group=%s ok=True", name, call.group_id)
         return dump_envelope(env)
     except ToolError as exc:
@@ -92,10 +111,17 @@ def _validate(spec: dict, args: dict) -> dict:
     return validate_args(spec, args)
 
 
-def _finalize(ctx: ToolContext, env: dict) -> dict:
+def _finalize(ctx: ToolContext, env: dict, name: str) -> dict:
     """信封统一兜底：caveats 必须是列表、data 必须可 JSON。"""
     env.setdefault("caveats", [])
     if not isinstance(env.get("caveats"), list):
         env["caveats"] = [str(env["caveats"])]
     json.dumps(env.get("data"), ensure_ascii=False, default=str)
+    if name in MONEY_ROUNDING_TOOLS and _config_flag(ctx, "round_amounts_to_five"):
+        from ..subagents import MONEY_ROUNDING_RULE
+
+        current = env.get("presentation")
+        env["presentation"] = (
+            f"{current}\n\n{MONEY_ROUNDING_RULE}" if current else MONEY_ROUNDING_RULE
+        )
     return env
