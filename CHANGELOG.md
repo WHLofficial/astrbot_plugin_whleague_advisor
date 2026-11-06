@@ -2,6 +2,12 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.1] - 2026-11-06
+
+### Fixed
+
+- 估价市场新鲜度改用 `last_success:market` 同步成功时间，避免 `deals` 内容未变时 `updated_at` 停滞导致估价被误判硬过期。
+
 ## [0.8.0] - 2026-11-06
 
 ### Added
@@ -62,6 +68,7 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.1]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.1
 [0.8.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.0
 [0.7.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.7.0
 [0.6.0]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.6.0

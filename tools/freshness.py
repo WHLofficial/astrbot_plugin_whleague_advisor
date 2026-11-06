@@ -35,6 +35,11 @@ _TIME_COLUMN = {
     "player_index": "updated_at", "player_scores": "as_of",
 }
 
+# market 的实时新鲜度以同步任务成功时间为准，不看 deals.updated_at：
+# deals 行只有内容变化才推进 updated_at（保持 model_gate 数据指纹稳定），
+# 没有新成交时即使 market 同步成功，旧 updated_at 也会把 market 误判成硬过期。
+_SYNC_JOB_KIND = {"market": "market"}
+
 # kind → (warn 分钟, hard 分钟)，§8.1 阈值表
 THRESHOLDS_MIN: dict[str, tuple[int, int]] = {
     "season": (10, 30),
@@ -50,9 +55,22 @@ THRESHOLDS_MIN: dict[str, tuple[int, int]] = {
 
 
 def freshness_of(conn: sqlite3.Connection, kinds: tuple[str, ...]) -> dict[str, str | None]:
-    """每个 kind 的最新写入时间（ISO），表空/缺表为 None。"""
+    """每个 kind 的最新可用时间（ISO），表空/缺表/无成功记录为 None。
+
+    market 优先使用 ``last_success:market``：同步成功即代表三张表都刷新过；
+    没有成功记录时退回表时间，保留旧库/测试的兜底行为。
+    """
     out: dict[str, str | None] = {}
     for kind in kinds:
+        job = _SYNC_JOB_KIND.get(kind)
+        if job:
+            try:
+                synced = dao.get_last_success(conn, job)
+            except sqlite3.OperationalError:
+                synced = None
+            if synced:
+                out[kind] = synced
+                continue
         newest: str | None = None
         for table in KIND_TABLES[kind]:
             col = _TIME_COLUMN[table]

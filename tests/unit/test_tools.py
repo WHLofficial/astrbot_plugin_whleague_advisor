@@ -645,14 +645,35 @@ class TestPlayerValue:
             rows = conn.execute(f"SELECT DISTINCT updated_at FROM {table}").fetchall()
             assert len(rows) == 1, f"{table} seed 时间不唯一，无法安全恢复"
             originals[table] = rows[0][0]
+        original_success = dao.get_last_success(conn, "market")
         for table in tables:
             conn.execute(f"UPDATE {table} SET updated_at = ?", (old,))
+        dao.set_last_success(conn, "market", old)
         try:
             env = call(build_tool_ctx(conn), "whl_player_value", {"name": "Harry Kane"})
             assert env["error"]["code"] == "STALE"
         finally:
             for table, updated_at in originals.items():
                 conn.execute(f"UPDATE {table} SET updated_at = ?", (updated_at,))
+            if original_success is None:
+                dao.delete_meta(conn, "last_success:market")
+            else:
+                dao.set_last_success(conn, "market", original_success)
+
+    def test_market_freshness_uses_sync_success_when_deals_unchanged(self, conn):
+        """deals 内容未变不推进 updated_at，但 market 同步成功即应判新鲜。"""
+        rows = conn.execute("SELECT DISTINCT updated_at FROM deals").fetchall()
+        assert len(rows) == 1, "deals seed 时间不唯一，无法安全恢复"
+        original_deal = rows[0][0]
+        original_success = dao.get_last_success(conn, "market")
+        assert original_success is not None, "全量同步应写入 last_success:market"
+        old = "2026-11-04T00:00:00+00:00"
+        conn.execute("UPDATE deals SET updated_at = ?", (old,))
+        try:
+            env = call(build_tool_ctx(conn), "whl_player_value", {"name": "Harry Kane"})
+            assert env["ok"] is True
+        finally:
+            conn.execute("UPDATE deals SET updated_at = ?", (original_deal,))
 
     def test_not_found(self, ctx):
         env = call(ctx, "whl_player_value", {"name": "Nobody Here"})
