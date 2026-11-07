@@ -2,6 +2,13 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.7] - 2026-11-07
+
+### Added
+
+- 成交属性快照（迁移 6）：`deals` 表新增 `player_attrs_json` / `player_attrs_version` / `player_attrs_captured_at`，market 热同步按用户裁决用当前属性近似补记（一次性捕获不覆盖、不参与 upsert 内容比对与指纹），历史无快照成交一并回填，为「属性分布 → 价格」残差模型积累数据。
+- 同级画像分位：`player_scores` 新增 `profile_pct` / `profile_bucket_n`（`profile_score` 在「估价角色组 × 能力等级整数」桶内的百分位），`whl_player_value` compact `signals.profile` 标注「同级属性突出 / 偏弱 / 居中」（桶 ≥8 人才给结论），detail `ability` 同步带分位字段；只做展示，不进 `fair`。
+
 ## [0.8.6] - 2026-11-07
 
 ### Changed

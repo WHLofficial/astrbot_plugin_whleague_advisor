@@ -129,7 +129,10 @@ class TestAssumptions:
         row["model_version"] = "test.1"
         data = advice_valuation.row_to_value_data(row, {"wage": {"r2": 0.9, "trained_at": "t"}, "comp": {}})
         assert set(data) >= {"ability", "fair", "deal", "rc", "wage", "model", "adjustments", "flags"}
-        assert set(data["ability"]) == {"level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses"}
+        assert set(data["ability"]) == {
+            "level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses",
+            "profile_pct", "profile_bucket_n",
+        }
         assert data["role_group"] == "MF"  # W → MF（compare 判断跨位置用）
 
 

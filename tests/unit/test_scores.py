@@ -58,6 +58,48 @@ def player(**kw) -> dict:
 # ---- 百分位画像 ----
 
 
+class TestProfilePercentile:
+    """档内画像分位（attach_profile_percentiles）：展示标注用，不进价格。"""
+
+    @staticmethod
+    def _row(pid, level, role_group, score):
+        return {"player_id": pid, "level": level, "role_group": role_group,
+                "profile_score": score}
+
+    def test_bucket_by_role_and_int_level(self):
+        rows = [
+            self._row(1, 6, "FW", 90),
+            self._row(2, 6, "FW", 70),
+            self._row(3, 6.5, "FW", 80),   # young 半档 int() → 6，与上面同桶
+            self._row(4, 6, "MF", 90),     # 同级不同组 → 不同桶
+            self._row(5, 7, "FW", 50),     # 同组不同级 → 不同桶
+        ]
+        scores.attach_profile_percentiles(rows)
+        # 口径与 scores.percentile 一致：100×(below + 0.5×equal)/n
+        assert rows[0]["profile_pct"] == pytest.approx(100 * 2.5 / 3, abs=0.1)  # FW6 桶最高
+        assert rows[1]["profile_pct"] == pytest.approx(100 * 0.5 / 3, abs=0.1)  # 桶内最低
+        assert rows[2]["profile_pct"] == 50.0                            # 并列中位
+        assert rows[3]["profile_pct"] == 50.0        # MF6 桶只有自己（自身半位）
+        assert rows[4]["profile_pct"] == 50.0        # FW7 桶只有自己
+        assert rows[0]["profile_bucket_n"] == 3
+        assert rows[3]["profile_bucket_n"] == 1
+
+    def test_missing_profile_or_level_stays_none(self):
+        rows = [
+            self._row(1, 6, "FW", None),
+            self._row(2, None, "FW", 80),
+            self._row(3, 6, None, 80),
+        ]
+        scores.attach_profile_percentiles(rows)
+        assert all(r["profile_pct"] is None and r["profile_bucket_n"] is None for r in rows)
+
+    def test_gk_and_mutation_in_place(self):
+        rows = [self._row(1, 8, "GK", 60), self._row(2, 8, "GK", 90)]
+        scores.attach_profile_percentiles(rows)
+        assert rows[0]["profile_pct"] == 25.0
+        assert rows[1]["profile_pct"] == 75.0
+
+
 class TestPercentile:
     def test_midpoint_percentile(self):
         assert scores.percentile(5, [1, 2, 3, 4, 5, 6, 7, 8, 9]) == pytest.approx(50.0)
@@ -298,7 +340,10 @@ class TestShapeLock:
 
         # 顶层键与 §5.5 data 完全一致
         assert set(data) == {"ability", "fair", "deal", "rc", "wage", "model", "adjustments", "flags"}
-        assert set(data["ability"]) == {"level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses"}
+        assert set(data["ability"]) == {
+            "level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses",
+            "profile_pct", "profile_bucket_n",
+        }
         assert set(data["fair"]) == {"low", "mid", "high", "source", "confidence"}
         assert set(data["deal"]) == {"low", "high", "cap", "floor", "flag"}
         assert set(data["rc"]) == {"value", "gap", "flag"}
@@ -317,7 +362,8 @@ class TestShapeLock:
     def test_shape_constant_declared_for_tools(self):
         """VALUE_DATA_SHAPE 常量本身与 §5.5 对齐（阶段 4 工具层引用它做契约）。"""
         assert scores.VALUE_DATA_SHAPE == {
-            "ability": {"level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses"},
+            "ability": {"level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses",
+                        "profile_pct", "profile_bucket_n"},
             "fair": {"low", "mid", "high", "source", "confidence"},
             "deal": {"low", "high", "cap", "floor", "flag"},
             "rc": {"value", "gap", "flag"},

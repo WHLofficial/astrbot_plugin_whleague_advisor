@@ -25,6 +25,26 @@ specs_mod = import_plugin("tools.specs")
 CLUB_BASE = "https://club.invalid"
 GROUP = "10001"
 
+value_tool = import_plugin("tools.value")
+
+
+class TestProfileSignal:
+    """同级画像标注（迁移 6）：桶 ≥8 才给结论，只描述属性、不断言价格。"""
+
+    def test_thresholds(self):
+        f = value_tool.profile_signal
+        assert f({"profile_pct": 85.0, "profile_bucket_n": 12}) == "同级属性突出（同等级同位置前 15%）"
+        assert f({"profile_pct": 99.6, "profile_bucket_n": 10}) == "同级属性突出（同等级同位置前 1%）"
+        assert f({"profile_pct": 15.0, "profile_bucket_n": 9}) == "同级属性偏弱（同等级同位置后 15%）"
+        assert f({"profile_pct": 50.0, "profile_bucket_n": 20}) == "同级属性居中"
+        assert f({"profile_pct": 79.9, "profile_bucket_n": 20}) == "同级属性居中"
+
+    def test_small_bucket_or_missing_is_insufficient(self):
+        f = value_tool.profile_signal
+        assert f({"profile_pct": 90.0, "profile_bucket_n": 7}) == "数据不足"
+        assert f({"profile_pct": None, "profile_bucket_n": None}) == "数据不足"
+        assert f({}) == "数据不足"
+
 
 def run(coro):
     return asyncio.run(coro)
@@ -664,7 +684,7 @@ class TestPlayerValue:
         assert data["ability"]["profile_score"] is not None
         assert data["ability"]["strengths"]
         assert data["facts"]["rc"] == 50 and data["facts"]["market"]["mid"] is not None
-        assert set(data["signals"]) == {"rc", "wage", "value", "age", "role"}
+        assert set(data["signals"]) == {"rc", "wage", "value", "age", "role", "profile"}
         assert env["presentation"] and "球员特点" in env["presentation"]
         assert "买不划算" not in data["signals"]["rc"]
         assert "fair" not in data and "deal" not in data

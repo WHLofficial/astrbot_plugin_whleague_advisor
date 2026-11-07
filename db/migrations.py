@@ -35,6 +35,7 @@ SCHEMA_STAGE3_PATH = Path(__file__).with_name("schema_stage3.sql")
 SCHEMA_STAGE4_PATH = Path(__file__).with_name("schema_stage4.sql")
 SCHEMA_PHASE1_PATH = Path(__file__).with_name("schema_phase1.sql")
 SCHEMA_PHASE2_PATH = Path(__file__).with_name("schema_phase2.sql")
+SCHEMA_PHASE3_PATH = Path(__file__).with_name("schema_phase3.sql")
 
 # (版本号, 迁移名, sql 正文)。版本号必须从 1 开始连续。
 # 每个 SQL 正文是独立文件；累计 schema = 各迁移正文按版本号顺序拼接。
@@ -44,6 +45,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (3, "0003_identity_tools", SCHEMA_STAGE4_PATH.read_text(encoding="utf-8")),
     (4, "0004_deals_snapshot_columns", SCHEMA_PHASE1_PATH.read_text(encoding="utf-8")),
     (5, "0005_model_gate_tables", SCHEMA_PHASE2_PATH.read_text(encoding="utf-8")),
+    (6, "0006_deal_attrs_profile_pct", SCHEMA_PHASE3_PATH.read_text(encoding="utf-8")),
 )
 
 CURRENT_VERSION = MIGRATIONS[-1][0]

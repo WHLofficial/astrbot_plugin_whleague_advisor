@@ -37,6 +37,24 @@ _RC_TEXT = {
     "rc_fair": "违约金不挡价",
 }
 
+# 同级画像标注门槛（迁移 6，2026-11-07）：桶成员 <8 不给结论（与 role_n 样本
+# 少的口径一致）；≥80 分位「突出」、≤20「偏弱」，只描述属性画像、不断言价格。
+# 措辞用「同级/同等级」：GLOSSARY 裁定能力等级 1–10 与成长档位 1–5 不得混称。
+_PROFILE_MIN_BUCKET = 8
+
+
+def profile_signal(ability: dict) -> str:
+    """画像同级分位 → 展示信号文本（compact signals.profile；分位 0–100 越高越强）。"""
+    pct = ability.get("profile_pct")
+    n = ability.get("profile_bucket_n")
+    if pct is None or n is None or n < _PROFILE_MIN_BUCKET:
+        return "数据不足"
+    if pct >= 80:
+        return f"同级属性突出（同等级同位置前 {max(1, round(100 - pct))}%）"
+    if pct <= 20:
+        return f"同级属性偏弱（同等级同位置后 {round(pct)}%）"
+    return "同级属性居中"
+
 
 async def _inactive_value(
     ctx: ToolContext,
@@ -311,6 +329,7 @@ def _compact_data(full: dict) -> dict:
             "ca": (full.get("ability") or {}).get("ca"),
             "pa": (full.get("ability") or {}).get("pa"),
             "profile_score": (full.get("ability") or {}).get("profile_score"),
+            "profile_pct": (full.get("ability") or {}).get("profile_pct"),
             "strengths": (full.get("ability") or {}).get("strengths") or [],
             "weaknesses": (full.get("ability") or {}).get("weaknesses") or [],
         },
@@ -322,6 +341,7 @@ def _compact_data(full: dict) -> dict:
             "age": age_signal(player.get("age")),
             "role": "样本少" if role_n is not None and role_n < 8 else
                     "样本足" if role_n is not None else "数据不足",
+            "profile": profile_signal(full.get("ability") or {}),
         },
     }
     if full.get("kind") == "trainee":

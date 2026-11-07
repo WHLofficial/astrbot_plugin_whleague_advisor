@@ -580,6 +580,34 @@ def compute_scores(conn: sqlite3.Connection, trained_at: str) -> tuple[list[dict
     return score_rows, model_rows, version
 
 
+def attach_profile_percentiles(rows: list[dict]) -> None:
+    """按 (role_group × 等级整数) 桶算 profile_score 分位，就地写回两列。
+
+    * 桶 = 估价角色组 × int(level)（young 的 5.5 归 5 桶，即「同能力等级」口径）；
+    * 分位口径与 scores.percentile 一致：100×(严格低于数 + 0.5×并列数)/n
+      （成员自身在桶内，最低约 0、最高不足 100）；只统计本轮有 profile_score
+      的行；GK 画像有自己的关键属性，同样参与；
+    * 结果只用于展示标注（同级突出/偏弱，不报级数），不进 fair_mid（§5.5 形状锁）。
+    """
+    buckets: dict[tuple[str, int], list[float]] = {}
+    keyed: list[tuple[dict, tuple[str, int]]] = []
+    for row in rows:
+        if row.get("profile_score") is None or row.get("role_group") is None or row.get("level") is None:
+            row["profile_pct"] = None
+            row["profile_bucket_n"] = None
+            continue
+        key = (row["role_group"], int(row["level"]))
+        buckets.setdefault(key, []).append(row["profile_score"])
+        keyed.append((row, key))
+    for row, key in keyed:
+        members = buckets[key]
+        score = row["profile_score"]
+        lower = sum(1 for x in members if x < score)
+        equal = sum(1 for x in members if x == score)
+        row["profile_pct"] = round(100.0 * (lower + 0.5 * equal) / len(members), 1)
+        row["profile_bucket_n"] = len(members)
+
+
 def score_rows_for(
     players: list[dict],
     attrs_by_fc: dict[int, dict],
@@ -600,6 +628,7 @@ def score_rows_for(
         for col in ("strengths", "weaknesses", "flags"):
             row[f"{col}_json"] = json.dumps(row.pop(col), ensure_ascii=False)
         score_rows.append(row)
+    attach_profile_percentiles(score_rows)
     return score_rows
 
 
@@ -699,7 +728,8 @@ def inputs_hash(player: dict, attrs: dict | None, version: str) -> str:
 
 
 VALUE_DATA_SHAPE = {
-    "ability": {"level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses"},
+    "ability": {"level", "ca", "pa", "age", "profile_score", "strengths", "weaknesses",
+                "profile_pct", "profile_bucket_n"},
     "fair": {"low", "mid", "high", "source", "confidence"},
     "deal": {"low", "high", "cap", "floor", "flag"},
     "rc": {"value", "gap", "flag"},
@@ -740,6 +770,8 @@ def assemble_value_data(score_row: dict, model_params: dict[str, dict]) -> dict:
             "profile_score": score_row.get("profile_score"),
             "strengths": score_row.get("strengths") or [],
             "weaknesses": score_row.get("weaknesses") or [],
+            "profile_pct": score_row.get("profile_pct"),
+            "profile_bucket_n": score_row.get("profile_bucket_n"),
         },
         "fair": {
             "low": score_row.get("fair_low"),

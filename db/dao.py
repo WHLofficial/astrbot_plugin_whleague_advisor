@@ -407,6 +407,16 @@ _DEALS_CONTENT_COLUMNS = (
     "window_seq", "completed_at", "player_level", "player_role", "snapshot_source",
 )
 
+# 属性快照三列（迁移 6）：热同步重放不带这些字段，且 ON CONFLICT 不更新、
+# 不参与内容比对——否则每轮重放都会把已补记的快照冲回 NULL，再由回填
+# 补上，updated_at（指纹）轮轮抖动。快照由 backfill_deal_attrs 一次性补记。
+_DEALS_ATTR_COLUMNS = ("player_attrs_json", "player_attrs_version", "player_attrs_captured_at")
+
+# 属性快照内容版本：raw = /api/players/meta 的 buffedAttrs 原样 JSON（未加工），
+# 特征定义演进后可从 raw 重算。用户裁决（2026-11-07）：平台成交无上游属性
+# 快照，用同步时的当前属性近似，历史行同样回填。
+ATTRS_SNAPSHOT_VERSION = "raw_v1"
+
 
 def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) -> int:
     """deals 按 id upsert，只增改不删（model-refit-plan §2 原则 4 / §5.3）。
@@ -417,11 +427,12 @@ def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) ->
     否则 market 每轮都把 updated_at 刷成 now，model_gate.data_fingerprint 的
     (id, fee, type, updated_at) 指纹会轮轮变化，「指纹没变不生成新候选」（决策 19）
     就失效了。反向保证：fee 修正 / 快照回填等任何内容变化都会推进该行 updated_at，
-    指纹随之变化。返回处理行数。
+    指纹随之变化。属性快照三列不参与冲突更新（见 _DEALS_ATTR_COLUMNS）。
+    返回处理行数。
     """
-    columns = ("id", *_DEALS_CONTENT_COLUMNS)
+    columns = ("id", *_DEALS_CONTENT_COLUMNS, *_DEALS_ATTR_COLUMNS)
     placeholders = ", ".join("?" for _ in range(len(columns) + 1))
-    assignments = ", ".join(f"{c} = excluded.{c}" for c in (*columns[1:], "updated_at"))
+    assignments = ", ".join(f"{c} = excluded.{c}" for c in (*_DEALS_CONTENT_COLUMNS, "updated_at"))
     content_check = " OR ".join(f"deals.{c} IS NOT excluded.{c}" for c in _DEALS_CONTENT_COLUMNS)
     sql = (
         f"INSERT INTO deals ({', '.join(columns)}, updated_at) VALUES ({placeholders}) "
@@ -430,6 +441,29 @@ def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) ->
     for row in rows:
         conn.execute(sql, (*[row.get(c) for c in columns], updated_at))
     return len(rows)
+
+
+def backfill_deal_attrs(conn: sqlite3.Connection, version: str, captured_at: str) -> int:
+    """给无属性快照的成交补记当前属性（一次性，捕获后不覆盖）。
+
+    用 player_attrs（活跃球员 attrs 预取）按 player_id 关联；attrs 缺失或为 NULL
+    的行（退役/学员等）保持 NULL，等下轮再试。**不推进 updated_at**：属性快照
+    是学习用元数据、不是成交市场内容，避免一次性回填 262 行触发指纹变化、
+    白白生成一轮候选（决策 19）；特征真正进拟合时再议指纹口径。
+    返回本轮补记行数。
+    """
+    cur = conn.execute(
+        "UPDATE deals SET "
+        "player_attrs_json = (SELECT pa.attrs_json FROM player_attrs pa "
+        "                     WHERE pa.player_id = deals.player_id "
+        "                       AND pa.attrs_json IS NOT NULL), "
+        "player_attrs_version = ?, player_attrs_captured_at = ? "
+        "WHERE player_attrs_json IS NULL AND EXISTS ("
+        "  SELECT 1 FROM player_attrs pa2 "
+        "  WHERE pa2.player_id = deals.player_id AND pa2.attrs_json IS NOT NULL)",
+        (version, captured_at),
+    )
+    return cur.rowcount
 
 
 def replace_market(
@@ -522,6 +556,7 @@ def replace_player_scores(conn: sqlite3.Connection, rows: list[dict], as_of: str
         "weaknesses_json", "rc", "wage", "exp_wage", "wage_gap", "wage_flag",
         "fair_low", "fair_mid", "fair_high", "fair_source", "deal_low", "deal_high",
         "rc_gap", "rc_flag", "role_n", "confidence", "flags_json", "model_version", "inputs_hash",
+        "profile_pct", "profile_bucket_n",
     )
     conn.execute("DELETE FROM player_scores")
     for row in rows:

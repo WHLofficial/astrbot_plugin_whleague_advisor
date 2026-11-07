@@ -92,7 +92,7 @@ class TestMigrations:
         assert dao.get_schema_version(raw_conn) == 1
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert "players" not in names
-        assert migrations.run_migrations(raw_conn) == [2, 3, 4, 5]
+        assert migrations.run_migrations(raw_conn) == [2, 3, 4, 5, 6]
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert {"players", "player_index", "player_attrs", "player_scores",
                 "model_params", "listings", "deals", "transfer_board"} <= names
@@ -105,7 +105,7 @@ class TestMigrations:
         migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:3])  # 到 3 号
         cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(deals)")}
         assert "player_level" not in cols
-        assert migrations.run_migrations(raw_conn) == [4, 5]
+        assert migrations.run_migrations(raw_conn) == [4, 5, 6]
         cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(deals)")}
         assert {"player_level", "player_role", "snapshot_source"} <= cols
 
@@ -114,9 +114,21 @@ class TestMigrations:
         migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:4])  # 到 4 号
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert "model_candidates" not in names
-        assert migrations.run_migrations(raw_conn) == [5]
+        assert migrations.run_migrations(raw_conn) == [5, 6]
         names = {name for name, _sql in _schema_snapshot(raw_conn)}
         assert {"model_candidates", "model_params_history"} <= names
+
+    def test_phase3_migration_adds_deal_attrs_and_profile_pct(self, raw_conn):
+        """6 号迁移给旧库 deals 补属性快照三列、player_scores 补档内分位列（2026-11-07）。"""
+        migrations.run_migrations(raw_conn, migrations.MIGRATIONS[:5])  # 到 5 号
+        deal_cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(deals)")}
+        score_cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(player_scores)")}
+        assert "player_attrs_json" not in deal_cols
+        assert migrations.run_migrations(raw_conn) == [6]
+        deal_cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(deals)")}
+        score_cols = {r[1] for r in raw_conn.execute("PRAGMA table_info(player_scores)")}
+        assert {"player_attrs_json", "player_attrs_version", "player_attrs_captured_at"} <= deal_cols
+        assert {"profile_pct", "profile_bucket_n"} <= score_cols
 
     def test_migration_bodies_concatenate_to_full_schema(self, raw_conn):
         """累计 schema = 各迁移正文按版本号拼接：拼起来执行 ≡ run_migrations 产物。"""

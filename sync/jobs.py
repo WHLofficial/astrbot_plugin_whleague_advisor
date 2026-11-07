@@ -548,6 +548,12 @@ async def _sync_market(ctx: SyncContext) -> int:
     now = ctx.now_iso()
     with dao.transaction(ctx.conn):
         dao.replace_market(ctx.conn, listings, deals, board, now)
+        # 成交属性快照（迁移 6，2026-11-07 用户裁决）：平台成交无上游属性快照，
+        # 用同步时的当前属性近似（球员特点变化小），历史无快照行一并回填；
+        # 一次性捕获后不覆盖。JOBS 顺序 player_attrs 先于 market，取到的就是本轮最新。
+        enriched = dao.backfill_deal_attrs(ctx.conn, dao.ATTRS_SNAPSHOT_VERSION, now)
+        if enriched:
+            logger.info("market：为 %d 笔成交补记属性快照（当前属性近似）", enriched)
         # 部署顺序 §5.4：插件先上线时旧接口无 nextCursor，首轮回填即置 done 闩死；
         # 平台分页接口上线后热同步一旦看到 nextCursor 就自动解锁（清 done+cursor，
         # 从头重放全部分页，upsert 对内容未变行幂等），下一轮冷任务即恢复回填，

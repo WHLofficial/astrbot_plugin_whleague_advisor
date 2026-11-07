@@ -240,6 +240,103 @@ class TestMarketSync:
         finally:
             conn.close()
 
+    def test_market_backfills_deal_attrs_snapshot(self, market_routes):
+        """market 任务补记成交属性快照：捕获一次不覆盖、重放不清空、不推 updated_at。"""
+        conn = mem_conn()
+        try:
+            run(run_job(make_ctx(conn, market_routes), "market"))
+            conn.execute(
+                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
+                "VALUES (4281, 428, '{\"CA\": 80}', '2026-11-07T00:00:00+00:00')"
+            )
+            run(run_job(make_ctx(conn, market_routes), "market"))  # 第二轮：重放 + 补记
+            row = conn.execute(
+                "SELECT player_attrs_json, player_attrs_version, player_attrs_captured_at, updated_at "
+                "FROM deals WHERE player_id = 428"
+            ).fetchone()
+            assert row["player_attrs_json"] == '{"CA": 80}'
+            assert row["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+            updated_at = row["updated_at"]
+            # 属性后变 + 第三轮重放：快照保持捕获值，updated_at 不抖动
+            conn.execute(
+                "UPDATE player_attrs SET attrs_json = '{\"CA\": 99}' WHERE player_id = 428"
+            )
+            run(run_job(make_ctx(conn, market_routes), "market"))
+            row = conn.execute(
+                "SELECT player_attrs_json, player_attrs_captured_at, updated_at "
+                "FROM deals WHERE player_id = 428"
+            ).fetchone()
+            assert row["player_attrs_json"] == '{"CA": 80}'
+            assert row["updated_at"] == updated_at
+        finally:
+            conn.close()
+
+    def test_upsert_deals_conflict_preserves_attr_snapshot(self):
+        """upsert_deals 冲突路径不更新属性快照三列，也不让快照列参与内容比对。"""
+        conn = mem_conn()
+        try:
+            deal = {
+                "id": 1, "player_id": 7, "player_name": "X", "fee": 4.0,
+                "type": "transfer", "completed_at": "2026-11-04T12:00:00+00:00",
+            }
+            dao.upsert_deals(conn, [deal], "t1")
+            conn.execute(
+                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
+                "VALUES (71, 7, '{\"CA\": 80}', 't')"
+            )
+            dao.backfill_deal_attrs(conn, dao.ATTRS_SNAPSHOT_VERSION, "t1")
+            dao.upsert_deals(conn, [{**deal, "fee": 5.0}], "t2")  # fee 修正冲掉不了快照
+            row = conn.execute(
+                "SELECT fee, player_attrs_version FROM deals WHERE id = 1"
+            ).fetchone()
+            assert row["fee"] == 5.0
+            assert row["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+        finally:
+            conn.close()
+
+    def test_backfill_deal_attrs_skips_missing_attrs(self):
+        """无 player_attrs 行 / attrs_json 为 NULL 的成交保持 NULL，不误写。"""
+        conn = mem_conn()
+        try:
+            dao.upsert_deals(conn, [
+                {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
+                 "completed_at": "2026-11-04T12:00:00+00:00"},
+                {"id": 2, "player_id": 8, "fee": 4.0, "type": "transfer",
+                 "completed_at": "2026-11-04T12:00:00+00:00"},
+            ], "t1")
+            conn.execute(
+                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
+                "VALUES (71, 7, NULL, 't')"
+            )  # 球员 7 有行但 attrs 为 NULL；球员 8 完全没有
+            assert dao.backfill_deal_attrs(conn, dao.ATTRS_SNAPSHOT_VERSION, "t1") == 0
+            cols = "player_attrs_json, player_attrs_version, player_attrs_captured_at"
+            for deal_id in (1, 2):
+                row = conn.execute(f"SELECT {cols} FROM deals WHERE id = {deal_id}").fetchone()
+                assert tuple(row) == (None, None, None)
+        finally:
+            conn.close()
+
+    def test_backfill_deal_attrs_picks_non_null_row_for_same_player(self):
+        """同 player_id 多行 player_attrs 时只取 attrs_json 非 NULL 的行，不写脏快照。"""
+        conn = mem_conn()
+        try:
+            dao.upsert_deals(conn, [
+                {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
+                 "completed_at": "2026-11-04T12:00:00+00:00"},
+            ], "t1")
+            conn.execute(
+                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) VALUES "
+                "(71, 7, NULL, 't'), (72, 7, '{\"CA\": 80}', 't')"
+            )
+            assert dao.backfill_deal_attrs(conn, dao.ATTRS_SNAPSHOT_VERSION, "t1") == 1
+            row = conn.execute(
+                "SELECT player_attrs_json, player_attrs_version FROM deals WHERE id = 1"
+            ).fetchone()
+            assert row["player_attrs_json"] == '{"CA": 80}'
+            assert row["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+        finally:
+            conn.close()
+
     def test_market_failure_keeps_old_rows_and_degrades(self, market_routes):
         conn = mem_conn()
         try:
