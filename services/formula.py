@@ -278,9 +278,9 @@ def apply_adjustments(mid: float, adjustments: list[dict]) -> float:
     return mid * factor
 
 
-# ---- 成交属性快照的成长回退（0.8.7，用户裁决：历史快照 = 现属性全体 −1）----
+# ---- 成交属性校准（0.8.7，训练阶段用；运行时快照只存 raw 基座）----
 
-# 允许 −1 回退的键：34 项能力属性 + CA/PA（键名以 /api/players/meta 实测为准）。
+# 允许按 Δ 回退的键：34 项能力属性 + CA/PA（键名以 /api/players/meta 实测为准）。
 # 元数据键一律不动：Age（岁数不随训练回退）、PosID*/PSID*/RoleID*/TeamID/ID/naID
 # （标识符）、height/weight/internationalrep/skillmoves/weakfoot/hashighqualityhead
 # （非训练成长属性）。白名单宁缺勿滥：平台新增键没进表就不回退，绝不误伤。
@@ -296,11 +296,12 @@ SNAPSHOT_SHIFT_ATTR_KEYS: frozenset[str] = frozenset({
 })
 
 
-def shift_attrs_back(attrs: dict, shift: int = 1) -> dict:
-    """现属性派生历史快照：白名单键全体 −shift（下限 1），其余键原样。
+def shift_attrs_back(attrs: dict, shift: int) -> dict:
+    """成交属性校准（训练阶段）：白名单键按 Δ 回退（下限 1），其余键原样。
 
-    平台成交接口暂无成交时属性（用户裁决 2026-11-07：派生快照全体 −1 近似）；
-    平台以后加发 playerAttrs 时走精确值，不经本函数。
+    Δ = 捕获时 CA − 成交时 CA（逐笔/逐玩家，参照是离线会话产物如
+    training_points_v2.csv；用户裁决 2026-11-07：按 CA 差在现属性上加减）。
+    平台加发 playerAttrs 后该笔成交走精确值，不经本函数。
     """
     out = {}
     for key, value in attrs.items():

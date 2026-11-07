@@ -413,15 +413,12 @@ _DEALS_CONTENT_COLUMNS = (
 _DEALS_ATTR_COLUMNS = ("player_attrs_json", "player_attrs_version", "player_attrs_captured_at")
 
 # 属性快照内容版本：
-# * deal_time_v1 — 平台成交接口下发的成交时属性（精确，未来字段 playerAttrs）；
-# * raw_v1       — 捕获及时（成交后 ≤24h）的当前属性原样，成长漂移≈0；
-# * derived_v1   — 滞后捕获的历史成交，现属性派生（白名单键全体 −1，用户裁决
-#                  2026-11-07：历史快照相对现属性全体 −1，因为历史属性由现属性派生）。
+# * deal_time_v1 — 平台成交接口下发的成交时属性（精确，字段 playerAttrs）；
+# * raw_v1       — 运行时用当前属性原样存「派生基座」（用户裁决 2026-11-07：
+#                  历史属性由现属性派生；按成交时 CA 差的逐笔校准在训练阶段做，
+#                  参照是离线会话产物，不进运行时——capture-once 的列只存可重算的基座）。
 ATTRS_DEALTIME_VERSION = "deal_time_v1"
 ATTRS_SNAPSHOT_VERSION = "raw_v1"
-ATTRS_DERIVED_VERSION = "derived_v1"
-ATTRS_RAW_MAX_LAG_HOURS = 24.0
-ATTRS_DERIVED_SHIFT = 1
 
 
 def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) -> int:
@@ -459,26 +456,22 @@ def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) ->
 
 
 def backfill_deal_attrs(conn: sqlite3.Connection, captured_at: str) -> int:
-    """给无属性快照的成交补记当前属性（一次性，捕获后不覆盖）。
+    """给无属性快照的成交补记当前属性「派生基座」（一次性，捕获后不覆盖）。
 
     用 player_attrs（活跃球员 attrs 预取）按 player_id 关联，attrs 缺失的成交
-    （退役/学员等）保持 NULL，等下轮再试。版本按捕获滞后定：
-    * 成交后 ≤ATTRS_RAW_MAX_LAG_HOURS → raw_v1，现属性原样（漂移≈0）；
-    * 滞后更久（历史回填）→ derived_v1，按用户裁决现属性白名单键全体 −1
-      （formula.shift_attrs_back；completed_at 缺失/不可解析时保守取 raw）。
+    （退役/学员等）保持 NULL，等下轮再试。存 raw_v1（现属性原样）：
+    按成交时 CA 差的逐笔校准（formula.shift_attrs_back）在训练阶段做，参照是
+    离线会话产物（pid 级 CA），capture-once 的列只存可重算的基座，不存修正值。
     **不推进 updated_at**：属性快照是学习用元数据、不是成交市场内容，避免
     一次性回填触发指纹变化、白白生成一轮候选（决策 19）；特征真正进拟合时
     再议指纹口径。返回本轮补记行数。
     """
-    from ..services.formula import shift_attrs_back
-
     rows = conn.execute(
-        "SELECT d.id, d.completed_at, pa.attrs_json FROM deals d "
+        "SELECT d.id, pa.attrs_json FROM deals d "
         "JOIN player_attrs pa ON pa.player_id = d.player_id AND pa.attrs_json IS NOT NULL "
         "WHERE d.player_attrs_json IS NULL "
         "ORDER BY d.id, pa.fc_id"
     ).fetchall()
-    now = _parse_iso(captured_at)
     count = 0
     seen: set[int] = set()
     for row in rows:
@@ -491,33 +484,13 @@ def backfill_deal_attrs(conn: sqlite3.Connection, captured_at: str) -> int:
             continue
         if not isinstance(attrs, dict):
             continue
-        completed = _parse_iso(row["completed_at"])
-        lag_hours = (now - completed).total_seconds() / 3600.0 \
-            if now is not None and completed is not None else None
-        if lag_hours is not None and lag_hours > ATTRS_RAW_MAX_LAG_HOURS:
-            version, attrs = ATTRS_DERIVED_VERSION, shift_attrs_back(attrs, ATTRS_DERIVED_SHIFT)
-        else:
-            version = ATTRS_SNAPSHOT_VERSION
         conn.execute(
             "UPDATE deals SET player_attrs_json = ?, player_attrs_version = ?, "
             "player_attrs_captured_at = ? WHERE id = ?",
-            (json.dumps(attrs, ensure_ascii=False), version, captured_at, row["id"]),
+            (json.dumps(attrs, ensure_ascii=False), ATTRS_SNAPSHOT_VERSION, captured_at, row["id"]),
         )
         count += 1
     return count
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    """ISO 时间戳 → aware datetime；None/解析失败返回 None（调用方保守降级）。"""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
 
 
 def replace_market(

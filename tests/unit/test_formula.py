@@ -7,7 +7,7 @@ market-rules.ts / bypass-rules.ts / negotiation-secret.ts，只读参考），
 
 import pytest
 
-from conftest import import_plugin
+from conftest import import_plugin, load_fixture
 
 formula = import_plugin("services.formula")
 
@@ -189,7 +189,21 @@ class TestFoldName:
 
 
 class TestShiftAttrsBack:
-    """历史成交派生快照（0.8.7 用户裁决）：白名单键全体 −1，元数据键不动。"""
+    """成交属性校准（0.8.7 用户裁决，训练阶段）：白名单键按 CA 差 Δ 回退，元数据键不动。"""
+
+    def test_whitelist_matches_real_meta_attrs(self):
+        """白名单 ≡ 真实 meta attrs 里的小写纯字母能力键（扣六个元数据键）+ CA/PA
+        （双向防漂移：漏键如 sprintspeed 会漏回退，混入元数据键会误回退）。"""
+        meta = import_plugin("sources.club").parse_players_meta(
+            load_fixture("club_players_meta.json")
+        )
+        attr_keys = set(meta[0]["attrs"])
+        meta_keys = {"height", "weight", "internationalrep",
+                     "skillmoves", "weakfoot", "hashighqualityhead"}
+        expected = {
+            k for k in attr_keys if k.isalpha() and k.islower() and k not in meta_keys
+        } | {"CA", "PA"}
+        assert formula.SNAPSHOT_SHIFT_ATTR_KEYS == expected
 
     def test_shifts_whitelisted_keys_only(self):
         attrs = {
@@ -199,7 +213,7 @@ class TestShiftAttrsBack:
             "internationalrep": 2, "hashighqualityhead": 1, "TeamID": 3,
             "preferredfoot": "Right",
         }
-        out = formula.shift_attrs_back(attrs)
+        out = formula.shift_attrs_back(attrs, shift=1)
         assert out["CA"] == 82 and out["PA"] == 85          # 用户例：CA83 → 成交 82
         assert out["finishing"] == 79 and out["composure"] == 54
         assert out["Age"] == 24 and out["PosID1"] == 25      # 标识/岁数不回退
@@ -211,7 +225,7 @@ class TestShiftAttrsBack:
         assert attrs["CA"] == 83  # 不改输入
 
     def test_floor_at_one_and_type_preserved(self):
-        out = formula.shift_attrs_back({"CA": 2, "balance": 1, "vision": 55.5})
+        out = formula.shift_attrs_back({"CA": 2, "balance": 1, "vision": 55.5}, shift=1)
         assert out["CA"] == 1 and out["balance"] == 1 and out["vision"] == 54.5  # 下限 1
         assert isinstance(out["CA"], int) and isinstance(out["vision"], float)
 

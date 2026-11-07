@@ -303,8 +303,8 @@ class TestMarketSync:
         finally:
             conn.close()
 
-    def test_upsert_deals_upgrades_derived_snapshot_with_dealtime_attrs(self):
-        """COALESCE 冲突路径：平台加发的成交时属性（非 NULL）升级覆盖派生快照。"""
+    def test_upsert_deals_upgrades_raw_snapshot_with_dealtime_attrs(self):
+        """COALESCE 冲突路径：平台加发的成交时属性（非 NULL）升级覆盖 raw 基座。"""
         conn = mem_conn()
         try:
             deal = {
@@ -316,10 +316,10 @@ class TestMarketSync:
                 "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
                 "VALUES (71, 7, '{\"CA\": 85}', 't')"
             )
-            dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00")  # 滞后 >24h → derived
+            dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00")  # raw 基座
             assert conn.execute(
                 "SELECT player_attrs_version FROM deals WHERE id = 1"
-            ).fetchone()["player_attrs_version"] == dao.ATTRS_DERIVED_VERSION
+            ).fetchone()["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
             dao.upsert_deals(conn, [{
                 **deal,
                 "player_attrs_json": '{"CA": 82}',
@@ -363,64 +363,30 @@ class TestMarketSync:
         finally:
             conn.close()
 
-    def test_backfill_deal_attrs_lag_gate_raw_vs_derived(self):
-        """滞后 ≤24h 存 raw 原样；>24h 存 derived（白名单键全体 −1，元数据键不动）。"""
+    def test_backfill_deal_attrs_stores_raw_base_for_any_lag(self):
+        """运行时只存 raw 基座（现属性原样）；按 CA 差的校准在训练阶段做。"""
         conn = mem_conn()
         try:
             dao.upsert_deals(conn, [
                 {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
-                 "completed_at": "2026-11-06T20:00:00+00:00"},  # 滞后 4h → raw
+                 "completed_at": "2026-11-06T20:00:00+00:00"},  # 滞后 4h
                 {"id": 2, "player_id": 8, "fee": 4.0, "type": "transfer",
-                 "completed_at": "2026-11-01T00:00:00+00:00"},  # 滞后 6 天 → derived
+                 "completed_at": "2026-10-01T00:00:00+00:00"},  # 滞后一个多月
                 {"id": 3, "player_id": 9, "fee": 4.0, "type": "transfer",
-                 "completed_at": None},                          # 无法判定 → 保守 raw
+                 "completed_at": None},
             ], "t1")
-            attrs = {"CA": 83, "PA": 86, "finishing": 80, "Age": 24,
-                     "PosID1": 25, "skillmoves": 3, "weakfoot": 1}
+            attrs = {"CA": 83, "PA": 86, "finishing": 80, "Age": 24, "PosID1": 25}
             for pid, fc in ((7, 71), (8, 72), (9, 73)):
                 conn.execute(
                     "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
                     f"VALUES ({fc}, {pid}, '{json.dumps(attrs)}', 't')"
                 )
             assert dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00") == 3
-            rows = {
-                r["player_id"]: r
-                for r in conn.execute(
-                    "SELECT player_id, player_attrs_json, player_attrs_version FROM deals"
-                )
-            }
-            raw = json.loads(rows[7]["player_attrs_json"])
-            assert rows[7]["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
-            assert raw["CA"] == 83 and raw["finishing"] == 80
-            derived = json.loads(rows[8]["player_attrs_json"])
-            assert rows[8]["player_attrs_version"] == dao.ATTRS_DERIVED_VERSION
-            assert derived["CA"] == 82 and derived["PA"] == 85  # 用户例：CA83→成交 82
-            assert derived["finishing"] == 79
-            assert derived["Age"] == 24 and derived["PosID1"] == 25  # 元数据不回退
-            assert derived["skillmoves"] == 3 and derived["weakfoot"] == 1
-            unknown = json.loads(rows[9]["player_attrs_json"])
-            assert rows[9]["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
-            assert unknown["CA"] == 83
-        finally:
-            conn.close()
-
-    def test_backfill_deal_attrs_floor_at_one(self):
-        """回退下限 1：已是 1 的属性不再下降。"""
-        conn = mem_conn()
-        try:
-            dao.upsert_deals(conn, [
-                {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
-                 "completed_at": "2026-10-01T00:00:00+00:00"},
-            ], "t1")
-            conn.execute(
-                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
-                "VALUES (71, 7, '{\"CA\": 2, \"balance\": 1}', 't')"
-            )
-            dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00")
-            attrs = json.loads(
-                conn.execute("SELECT player_attrs_json FROM deals WHERE id = 1").fetchone()[0]
-            )
-            assert attrs["CA"] == 1 and attrs["balance"] == 1
+            for row in conn.execute(
+                "SELECT player_id, player_attrs_json, player_attrs_version FROM deals"
+            ):
+                assert row["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+                assert json.loads(row["player_attrs_json"])["CA"] == 83  # 不做运行时回退
         finally:
             conn.close()
 

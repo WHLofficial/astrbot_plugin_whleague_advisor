@@ -411,7 +411,7 @@ def parse_deals(payload: Any) -> dict:
                 "snapshot_source": optional_str(row, "snapshotSource", where),
                 # 成交时全属性（迁移 6 契约）：平台加发 playerAttrs（与
                 # /api/players/meta attrs 同形状）后为精确快照；未加发恒 None，
-                # 由同步侧用当前属性近似补记（raw_v1 / derived_v1）。
+                # 由同步侧用当前属性补记派生基座（raw_v1，校准在训练阶段）。
                 "player_attrs": optional_mapping(row, "playerAttrs", where),
             }
         )

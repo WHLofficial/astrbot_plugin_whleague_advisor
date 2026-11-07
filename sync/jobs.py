@@ -552,9 +552,9 @@ async def _sync_market(ctx: SyncContext) -> int:
     with dao.transaction(ctx.conn):
         dao.replace_market(ctx.conn, listings, deals, board, now)
         # 成交属性快照（迁移 6，2026-11-07 用户裁决）：平台成交暂无上游属性快照，
-        # 用同步时的当前属性近似补记；捕获滞后 >24h 的历史行按「现属性全体 −1」
-        # 派生（derived_v1），刚成交的存原样（raw_v1）；平台以后加发 playerAttrs
-        # 的行走 deal_time_v1 精确值，重放时 COALESCE 自动升级覆盖派生值。
+        # 用同步时的当前属性存「派生基座」（raw_v1）；按成交时 CA 差的逐笔校准
+        # 在训练阶段做（参照离线会话产物）。平台加发 playerAttrs 的行走
+        # deal_time_v1 精确值，重放时 COALESCE 自动升级覆盖基座值。
         # JOBS 顺序 player_attrs 先于 market，取到的就是本轮最新。
         enriched = dao.backfill_deal_attrs(ctx.conn, now)
         if enriched:
@@ -625,7 +625,7 @@ def _attach_deal_attr_snapshot(row: dict, now: str | None) -> dict:
 
     上游将来在成交行里加发 `playerAttrs`（成交时全属性，精确）→ 存
     deal_time_v1；未加发（现状）→ 三列留 NULL，由 backfill_deal_attrs 在
-    同一事务里按捕获滞后补记 raw_v1 / derived_v1。
+    同一事务里补记 raw_v1 派生基座（校准在训练阶段做）。
     """
     attrs = row.get("playerAttrs")
     if isinstance(attrs, dict) and attrs:
