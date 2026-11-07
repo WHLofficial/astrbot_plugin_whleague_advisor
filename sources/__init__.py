@@ -167,3 +167,12 @@ def optional_float(mapping: dict, key: str, where: str) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SourcePayloadError(f"{where}.{key} 应为数值或 null，实际 {value!r}")
     return float(value)
+
+
+def optional_mapping(mapping: dict, key: str, where: str) -> dict | None:
+    value = mapping.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SourcePayloadError(f"{where}.{key} 应为对象或 null，实际 {type(value).__name__}")
+    return value

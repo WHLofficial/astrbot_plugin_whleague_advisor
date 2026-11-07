@@ -6,7 +6,7 @@
 
 ### Added
 
-- 成交属性快照（迁移 6）：`deals` 表新增 `player_attrs_json` / `player_attrs_version` / `player_attrs_captured_at`，market 热同步按用户裁决用当前属性近似补记（一次性捕获不覆盖、不参与 upsert 内容比对与指纹），历史无快照成交一并回填，为「属性分布 → 价格」残差模型积累数据。
+- 成交属性快照（迁移 6）：`deals` 表新增 `player_attrs_json` / `player_attrs_version` / `player_attrs_captured_at`，market 热同步按用户裁决用当前属性近似补记（一次性捕获不覆盖、不参与 upsert 内容比对与指纹），历史无快照成交一并回填，为「属性分布 → 价格」残差模型积累数据。快照版本三态：捕获滞后 ≤24h 存 `raw_v1`（原样）；更久存 `derived_v1`（按用户裁决「历史属性由现属性派生」，能力白名单键 + CA/PA 全体 −1，Age/位置/花式等元数据不动，下限 1）；平台成交接口以后加发 `playerAttrs`（成交时全属性）即存精确值 `deal_time_v1`，重放经 COALESCE 自动升级覆盖派生值。
 - 同级画像分位：`player_scores` 新增 `profile_pct` / `profile_bucket_n`（`profile_score` 在「估价角色组 × 能力等级整数」桶内的百分位），`whl_player_value` compact `signals.profile` 标注「同级属性突出 / 偏弱 / 居中」（桶 ≥8 人才给结论），detail `ability` 同步带分位字段；只做展示，不进 `fair`。
 
 ## [0.8.6] - 2026-11-07

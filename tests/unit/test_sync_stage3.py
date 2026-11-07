@@ -2,6 +2,7 @@
 名册解析、失败保留旧值 + 标降级、查询助手。全部离线 fixture 回放。"""
 
 import asyncio
+import json
 import sqlite3
 
 import pytest
@@ -35,6 +36,13 @@ def make_ctx(conn, routes, *, tour=None) -> SyncContext:
         club=sources_club.ClubSource(CLUB_BASE, transport=FixtureTransport(routes)),
         tour=tour,
     )
+
+
+def _ctx_at(conn, routes, now: str) -> SyncContext:
+    """固定时钟的同步上下文（属性快照滞后门测试用）。"""
+    ctx = make_ctx(conn, routes)
+    ctx.now_fn = lambda: now
+    return ctx
 
 
 # ---- players：翻页与名单退出 ----
@@ -244,12 +252,13 @@ class TestMarketSync:
         """market 任务补记成交属性快照：捕获一次不覆盖、重放不清空、不推 updated_at。"""
         conn = mem_conn()
         try:
-            run(run_job(make_ctx(conn, market_routes), "market"))
+            # 固定时钟：fixture 成交 2026-11-04T14:36，now 取同日稍晚 → 滞后 <24h → raw
+            run(run_job(_ctx_at(conn, market_routes, "2026-11-04T20:00:00+00:00"), "market"))
             conn.execute(
                 "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
-                "VALUES (4281, 428, '{\"CA\": 80}', '2026-11-07T00:00:00+00:00')"
+                "VALUES (4281, 428, '{\"CA\": 80}', '2026-11-04T20:00:00+00:00')"
             )
-            run(run_job(make_ctx(conn, market_routes), "market"))  # 第二轮：重放 + 补记
+            run(run_job(_ctx_at(conn, market_routes, "2026-11-04T20:05:00+00:00"), "market"))
             row = conn.execute(
                 "SELECT player_attrs_json, player_attrs_version, player_attrs_captured_at, updated_at "
                 "FROM deals WHERE player_id = 428"
@@ -261,7 +270,7 @@ class TestMarketSync:
             conn.execute(
                 "UPDATE player_attrs SET attrs_json = '{\"CA\": 99}' WHERE player_id = 428"
             )
-            run(run_job(make_ctx(conn, market_routes), "market"))
+            run(run_job(_ctx_at(conn, market_routes, "2026-11-04T20:10:00+00:00"), "market"))
             row = conn.execute(
                 "SELECT player_attrs_json, player_attrs_captured_at, updated_at "
                 "FROM deals WHERE player_id = 428"
@@ -272,7 +281,7 @@ class TestMarketSync:
             conn.close()
 
     def test_upsert_deals_conflict_preserves_attr_snapshot(self):
-        """upsert_deals 冲突路径不更新属性快照三列，也不让快照列参与内容比对。"""
+        """upsert_deals 冲突路径不冲掉属性快照，也不让快照列参与内容比对。"""
         conn = mem_conn()
         try:
             deal = {
@@ -284,13 +293,51 @@ class TestMarketSync:
                 "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
                 "VALUES (71, 7, '{\"CA\": 80}', 't')"
             )
-            dao.backfill_deal_attrs(conn, dao.ATTRS_SNAPSHOT_VERSION, "t1")
+            dao.backfill_deal_attrs(conn, "2026-11-04T12:01:00+00:00")  # 滞后 1 分钟 → raw
             dao.upsert_deals(conn, [{**deal, "fee": 5.0}], "t2")  # fee 修正冲掉不了快照
             row = conn.execute(
                 "SELECT fee, player_attrs_version FROM deals WHERE id = 1"
             ).fetchone()
             assert row["fee"] == 5.0
             assert row["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+        finally:
+            conn.close()
+
+    def test_upsert_deals_upgrades_derived_snapshot_with_dealtime_attrs(self):
+        """COALESCE 冲突路径：平台加发的成交时属性（非 NULL）升级覆盖派生快照。"""
+        conn = mem_conn()
+        try:
+            deal = {
+                "id": 1, "player_id": 7, "player_name": "X", "fee": 4.0,
+                "type": "transfer", "completed_at": "2026-10-01T12:00:00+00:00",
+            }
+            dao.upsert_deals(conn, [deal], "t1")
+            conn.execute(
+                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
+                "VALUES (71, 7, '{\"CA\": 85}', 't')"
+            )
+            dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00")  # 滞后 >24h → derived
+            assert conn.execute(
+                "SELECT player_attrs_version FROM deals WHERE id = 1"
+            ).fetchone()["player_attrs_version"] == dao.ATTRS_DERIVED_VERSION
+            dao.upsert_deals(conn, [{
+                **deal,
+                "player_attrs_json": '{"CA": 82}',
+                "player_attrs_version": dao.ATTRS_DEALTIME_VERSION,
+                "player_attrs_captured_at": "t2",
+            }], "t2")
+            row = conn.execute(
+                "SELECT player_attrs_json, player_attrs_version, player_attrs_captured_at "
+                "FROM deals WHERE id = 1"
+            ).fetchone()
+            assert row["player_attrs_json"] == '{"CA": 82}'
+            assert row["player_attrs_version"] == dao.ATTRS_DEALTIME_VERSION
+            # 反向：重放不带快照（NULL）→ COALESCE 保留精确值
+            dao.upsert_deals(conn, [deal], "t3")
+            row = conn.execute(
+                "SELECT player_attrs_version FROM deals WHERE id = 1"
+            ).fetchone()
+            assert row["player_attrs_version"] == dao.ATTRS_DEALTIME_VERSION
         finally:
             conn.close()
 
@@ -308,11 +355,72 @@ class TestMarketSync:
                 "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
                 "VALUES (71, 7, NULL, 't')"
             )  # 球员 7 有行但 attrs 为 NULL；球员 8 完全没有
-            assert dao.backfill_deal_attrs(conn, dao.ATTRS_SNAPSHOT_VERSION, "t1") == 0
+            assert dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00") == 0
             cols = "player_attrs_json, player_attrs_version, player_attrs_captured_at"
             for deal_id in (1, 2):
                 row = conn.execute(f"SELECT {cols} FROM deals WHERE id = {deal_id}").fetchone()
                 assert tuple(row) == (None, None, None)
+        finally:
+            conn.close()
+
+    def test_backfill_deal_attrs_lag_gate_raw_vs_derived(self):
+        """滞后 ≤24h 存 raw 原样；>24h 存 derived（白名单键全体 −1，元数据键不动）。"""
+        conn = mem_conn()
+        try:
+            dao.upsert_deals(conn, [
+                {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
+                 "completed_at": "2026-11-06T20:00:00+00:00"},  # 滞后 4h → raw
+                {"id": 2, "player_id": 8, "fee": 4.0, "type": "transfer",
+                 "completed_at": "2026-11-01T00:00:00+00:00"},  # 滞后 6 天 → derived
+                {"id": 3, "player_id": 9, "fee": 4.0, "type": "transfer",
+                 "completed_at": None},                          # 无法判定 → 保守 raw
+            ], "t1")
+            attrs = {"CA": 83, "PA": 86, "finishing": 80, "Age": 24,
+                     "PosID1": 25, "skillmoves": 3, "weakfoot": 1}
+            for pid, fc in ((7, 71), (8, 72), (9, 73)):
+                conn.execute(
+                    "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
+                    f"VALUES ({fc}, {pid}, '{json.dumps(attrs)}', 't')"
+                )
+            assert dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00") == 3
+            rows = {
+                r["player_id"]: r
+                for r in conn.execute(
+                    "SELECT player_id, player_attrs_json, player_attrs_version FROM deals"
+                )
+            }
+            raw = json.loads(rows[7]["player_attrs_json"])
+            assert rows[7]["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+            assert raw["CA"] == 83 and raw["finishing"] == 80
+            derived = json.loads(rows[8]["player_attrs_json"])
+            assert rows[8]["player_attrs_version"] == dao.ATTRS_DERIVED_VERSION
+            assert derived["CA"] == 82 and derived["PA"] == 85  # 用户例：CA83→成交 82
+            assert derived["finishing"] == 79
+            assert derived["Age"] == 24 and derived["PosID1"] == 25  # 元数据不回退
+            assert derived["skillmoves"] == 3 and derived["weakfoot"] == 1
+            unknown = json.loads(rows[9]["player_attrs_json"])
+            assert rows[9]["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
+            assert unknown["CA"] == 83
+        finally:
+            conn.close()
+
+    def test_backfill_deal_attrs_floor_at_one(self):
+        """回退下限 1：已是 1 的属性不再下降。"""
+        conn = mem_conn()
+        try:
+            dao.upsert_deals(conn, [
+                {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
+                 "completed_at": "2026-10-01T00:00:00+00:00"},
+            ], "t1")
+            conn.execute(
+                "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) "
+                "VALUES (71, 7, '{\"CA\": 2, \"balance\": 1}', 't')"
+            )
+            dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00")
+            attrs = json.loads(
+                conn.execute("SELECT player_attrs_json FROM deals WHERE id = 1").fetchone()[0]
+            )
+            assert attrs["CA"] == 1 and attrs["balance"] == 1
         finally:
             conn.close()
 
@@ -322,13 +430,13 @@ class TestMarketSync:
         try:
             dao.upsert_deals(conn, [
                 {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer",
-                 "completed_at": "2026-11-04T12:00:00+00:00"},
+                 "completed_at": "2026-11-06T20:00:00+00:00"},
             ], "t1")
             conn.execute(
                 "INSERT INTO player_attrs (fc_id, player_id, attrs_json, fetched_at) VALUES "
                 "(71, 7, NULL, 't'), (72, 7, '{\"CA\": 80}', 't')"
             )
-            assert dao.backfill_deal_attrs(conn, dao.ATTRS_SNAPSHOT_VERSION, "t1") == 1
+            assert dao.backfill_deal_attrs(conn, "2026-11-07T00:00:00+00:00") == 1
             row = conn.execute(
                 "SELECT player_attrs_json, player_attrs_version FROM deals WHERE id = 1"
             ).fetchone()
@@ -336,6 +444,18 @@ class TestMarketSync:
             assert row["player_attrs_version"] == dao.ATTRS_SNAPSHOT_VERSION
         finally:
             conn.close()
+
+    def test_attach_deal_attr_snapshot_passthrough(self):
+        """平台加发 playerAttrs → deal_time_v1 三列随行落库；未加发 → 留 NULL 给回填。"""
+        deal = {"id": 1, "player_id": 7, "fee": 4.0, "type": "transfer"}
+        with_attrs = jobs_mod._attach_deal_attr_snapshot(
+            {**deal, "playerAttrs": {"CA": 82}}, "2026-11-07T00:00:00+00:00"
+        )
+        assert with_attrs["player_attrs_json"] == '{"CA": 82}'
+        assert with_attrs["player_attrs_version"] == dao.ATTRS_DEALTIME_VERSION
+        assert with_attrs["player_attrs_captured_at"] == "2026-11-07T00:00:00+00:00"
+        bare = jobs_mod._attach_deal_attr_snapshot(dict(deal), "2026-11-07T00:00:00+00:00")
+        assert "player_attrs_json" not in bare
 
     def test_market_failure_keeps_old_rows_and_degrades(self, market_routes):
         conn = mem_conn()
@@ -709,14 +829,19 @@ class TestSourceParsersOnFixtures:
             "id": 1, "playerId": 72, "type": "transfer", "fee": 4, "extraFee": None,
             "season": 9, "windowSeq": 2, "completedAt": "2026-11-04T12:00:00Z",
         }
-        with_snap = {**base, "playerLevel": 7.5, "playerRole": "CB", "snapshotSource": "deal_time"}
+        with_snap = {
+            **base, "playerLevel": 7.5, "playerRole": "CB", "snapshotSource": "deal_time",
+            "playerAttrs": {"CA": 82, "finishing": 80},
+        }
         rows = sources_club.parse_deals({"deals": [with_snap, base]})["deals"]
         assert rows[0]["player_level"] == 7.5
         assert rows[0]["player_role"] == "CB"
         assert rows[0]["snapshot_source"] == "deal_time"
+        assert rows[0]["player_attrs"] == {"CA": 82, "finishing": 80}
         assert rows[1]["player_level"] is None
         assert rows[1]["player_role"] is None
         assert rows[1]["snapshot_source"] is None
+        assert rows[1]["player_attrs"] is None
         board = sources_club.parse_transfer_board(load_fixture("club_market_board.json"))
         assert len(board) == 16
 

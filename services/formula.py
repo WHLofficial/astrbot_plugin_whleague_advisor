@@ -278,6 +278,40 @@ def apply_adjustments(mid: float, adjustments: list[dict]) -> float:
     return mid * factor
 
 
+# ---- 成交属性快照的成长回退（0.8.7，用户裁决：历史快照 = 现属性全体 −1）----
+
+# 允许 −1 回退的键：34 项能力属性 + CA/PA（键名以 /api/players/meta 实测为准）。
+# 元数据键一律不动：Age（岁数不随训练回退）、PosID*/PSID*/RoleID*/TeamID/ID/naID
+# （标识符）、height/weight/internationalrep/skillmoves/weakfoot/hashighqualityhead
+# （非训练成长属性）。白名单宁缺勿滥：平台新增键没进表就不回退，绝不误伤。
+SNAPSHOT_SHIFT_ATTR_KEYS: frozenset[str] = frozenset({
+    "CA", "PA",
+    "acceleration", "aggression", "agility", "balance", "ballcontrol", "composure",
+    "crossing", "curve", "defensiveawareness", "dribbling", "finishing",
+    "freekickaccuracy", "gkdiving", "gkhandling", "gkkicking", "gkpositioning",
+    "gkreflexes", "headingaccuracy", "interceptions", "jumping", "longpassing",
+    "longshots", "penalties", "positioning", "reactions", "shortpassing",
+    "shotpower", "slidingtackle", "sprintspeed", "stamina", "standingtackle",
+    "strength", "vision", "volleys",
+})
+
+
+def shift_attrs_back(attrs: dict, shift: int = 1) -> dict:
+    """现属性派生历史快照：白名单键全体 −shift（下限 1），其余键原样。
+
+    平台成交接口暂无成交时属性（用户裁决 2026-11-07：派生快照全体 −1 近似）；
+    平台以后加发 playerAttrs 时走精确值，不经本函数。
+    """
+    out = {}
+    for key, value in attrs.items():
+        if key in SNAPSHOT_SHIFT_ATTR_KEYS and isinstance(value, (int, float)) \
+                and not isinstance(value, bool):
+            out[key] = max(1, int(value) - shift) if isinstance(value, int) else max(1.0, value - shift)
+        else:
+            out[key] = value
+    return out
+
+
 # ---- 名字折叠（§6 名字解析的地基，roster/player_index 的 search_name）----
 
 # 平台 name-fold.ts FOLD_SPEC 逐项移植（2026-09-21 生产 18301 行实测的 87 个非 ASCII 字）。

@@ -407,15 +407,21 @@ _DEALS_CONTENT_COLUMNS = (
     "window_seq", "completed_at", "player_level", "player_role", "snapshot_source",
 )
 
-# 属性快照三列（迁移 6）：热同步重放不带这些字段，且 ON CONFLICT 不更新、
-# 不参与内容比对——否则每轮重放都会把已补记的快照冲回 NULL，再由回填
-# 补上，updated_at（指纹）轮轮抖动。快照由 backfill_deal_attrs 一次性补记。
+# 属性快照三列（迁移 6）：热同步重放不带这些字段，ON CONFLICT 用 COALESCE——
+# 上游带的成交时属性（平台加发 playerAttrs 后）覆盖旧值，重放的 NULL 不冲掉
+# 已补记快照；三列不参与内容比对（否则轮轮抖动 updated_at/指纹）。
 _DEALS_ATTR_COLUMNS = ("player_attrs_json", "player_attrs_version", "player_attrs_captured_at")
 
-# 属性快照内容版本：raw = /api/players/meta 的 buffedAttrs 原样 JSON（未加工），
-# 特征定义演进后可从 raw 重算。用户裁决（2026-11-07）：平台成交无上游属性
-# 快照，用同步时的当前属性近似，历史行同样回填。
+# 属性快照内容版本：
+# * deal_time_v1 — 平台成交接口下发的成交时属性（精确，未来字段 playerAttrs）；
+# * raw_v1       — 捕获及时（成交后 ≤24h）的当前属性原样，成长漂移≈0；
+# * derived_v1   — 滞后捕获的历史成交，现属性派生（白名单键全体 −1，用户裁决
+#                  2026-11-07：历史快照相对现属性全体 −1，因为历史属性由现属性派生）。
+ATTRS_DEALTIME_VERSION = "deal_time_v1"
 ATTRS_SNAPSHOT_VERSION = "raw_v1"
+ATTRS_DERIVED_VERSION = "derived_v1"
+ATTRS_RAW_MAX_LAG_HOURS = 24.0
+ATTRS_DERIVED_SHIFT = 1
 
 
 def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) -> int:
@@ -427,43 +433,91 @@ def upsert_deals(conn: sqlite3.Connection, rows: list[dict], updated_at: str) ->
     否则 market 每轮都把 updated_at 刷成 now，model_gate.data_fingerprint 的
     (id, fee, type, updated_at) 指纹会轮轮变化，「指纹没变不生成新候选」（决策 19）
     就失效了。反向保证：fee 修正 / 快照回填等任何内容变化都会推进该行 updated_at，
-    指纹随之变化。属性快照三列不参与冲突更新（见 _DEALS_ATTR_COLUMNS）。
+    指纹随之变化。属性快照三列走 COALESCE（见 _DEALS_ATTR_COLUMNS）：重放行的
+    NULL 不冲掉已补记快照、也不参与比对（无抖动）；但上游带非 NULL 快照且与
+    现值不同（平台加发 playerAttrs 升级派生值）视为内容变化，推进一次 updated_at。
     返回处理行数。
     """
     columns = ("id", *_DEALS_CONTENT_COLUMNS, *_DEALS_ATTR_COLUMNS)
     placeholders = ", ".join("?" for _ in range(len(columns) + 1))
     assignments = ", ".join(f"{c} = excluded.{c}" for c in (*_DEALS_CONTENT_COLUMNS, "updated_at"))
+    attr_assignments = ", ".join(
+        f"{c} = COALESCE(excluded.{c}, deals.{c})" for c in _DEALS_ATTR_COLUMNS
+    )
     content_check = " OR ".join(f"deals.{c} IS NOT excluded.{c}" for c in _DEALS_CONTENT_COLUMNS)
+    content_check += (
+        " OR (excluded.player_attrs_json IS NOT NULL "
+        "AND deals.player_attrs_json IS NOT excluded.player_attrs_json)"
+    )
     sql = (
         f"INSERT INTO deals ({', '.join(columns)}, updated_at) VALUES ({placeholders}) "
-        f"ON CONFLICT(id) DO UPDATE SET {assignments} WHERE {content_check}"
+        f"ON CONFLICT(id) DO UPDATE SET {assignments}, {attr_assignments} WHERE {content_check}"
     )
     for row in rows:
         conn.execute(sql, (*[row.get(c) for c in columns], updated_at))
     return len(rows)
 
 
-def backfill_deal_attrs(conn: sqlite3.Connection, version: str, captured_at: str) -> int:
+def backfill_deal_attrs(conn: sqlite3.Connection, captured_at: str) -> int:
     """给无属性快照的成交补记当前属性（一次性，捕获后不覆盖）。
 
-    用 player_attrs（活跃球员 attrs 预取）按 player_id 关联；attrs 缺失或为 NULL
-    的行（退役/学员等）保持 NULL，等下轮再试。**不推进 updated_at**：属性快照
-    是学习用元数据、不是成交市场内容，避免一次性回填 262 行触发指纹变化、
-    白白生成一轮候选（决策 19）；特征真正进拟合时再议指纹口径。
-    返回本轮补记行数。
+    用 player_attrs（活跃球员 attrs 预取）按 player_id 关联，attrs 缺失的成交
+    （退役/学员等）保持 NULL，等下轮再试。版本按捕获滞后定：
+    * 成交后 ≤ATTRS_RAW_MAX_LAG_HOURS → raw_v1，现属性原样（漂移≈0）；
+    * 滞后更久（历史回填）→ derived_v1，按用户裁决现属性白名单键全体 −1
+      （formula.shift_attrs_back；completed_at 缺失/不可解析时保守取 raw）。
+    **不推进 updated_at**：属性快照是学习用元数据、不是成交市场内容，避免
+    一次性回填触发指纹变化、白白生成一轮候选（决策 19）；特征真正进拟合时
+    再议指纹口径。返回本轮补记行数。
     """
-    cur = conn.execute(
-        "UPDATE deals SET "
-        "player_attrs_json = (SELECT pa.attrs_json FROM player_attrs pa "
-        "                     WHERE pa.player_id = deals.player_id "
-        "                       AND pa.attrs_json IS NOT NULL), "
-        "player_attrs_version = ?, player_attrs_captured_at = ? "
-        "WHERE player_attrs_json IS NULL AND EXISTS ("
-        "  SELECT 1 FROM player_attrs pa2 "
-        "  WHERE pa2.player_id = deals.player_id AND pa2.attrs_json IS NOT NULL)",
-        (version, captured_at),
-    )
-    return cur.rowcount
+    from ..services.formula import shift_attrs_back
+
+    rows = conn.execute(
+        "SELECT d.id, d.completed_at, pa.attrs_json FROM deals d "
+        "JOIN player_attrs pa ON pa.player_id = d.player_id AND pa.attrs_json IS NOT NULL "
+        "WHERE d.player_attrs_json IS NULL "
+        "ORDER BY d.id, pa.fc_id"
+    ).fetchall()
+    now = _parse_iso(captured_at)
+    count = 0
+    seen: set[int] = set()
+    for row in rows:
+        if row["id"] in seen:  # 同 player_id 多行时取 fc_id 最小的非 NULL attrs
+            continue
+        seen.add(row["id"])
+        try:
+            attrs = json.loads(row["attrs_json"])
+        except ValueError:
+            continue
+        if not isinstance(attrs, dict):
+            continue
+        completed = _parse_iso(row["completed_at"])
+        lag_hours = (now - completed).total_seconds() / 3600.0 \
+            if now is not None and completed is not None else None
+        if lag_hours is not None and lag_hours > ATTRS_RAW_MAX_LAG_HOURS:
+            version, attrs = ATTRS_DERIVED_VERSION, shift_attrs_back(attrs, ATTRS_DERIVED_SHIFT)
+        else:
+            version = ATTRS_SNAPSHOT_VERSION
+        conn.execute(
+            "UPDATE deals SET player_attrs_json = ?, player_attrs_version = ?, "
+            "player_attrs_captured_at = ? WHERE id = ?",
+            (json.dumps(attrs, ensure_ascii=False), version, captured_at, row["id"]),
+        )
+        count += 1
+    return count
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """ISO 时间戳 → aware datetime；None/解析失败返回 None（调用方保守降级）。"""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def replace_market(

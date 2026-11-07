@@ -536,22 +536,27 @@ async def _sync_market(ctx: SyncContext) -> int:
     payload = await ctx.club.fetch_deals()
     board = await ctx.club.fetch_transfer_board()
     club_map = dao.read_clubs_name_map(ctx.conn)
+    now = ctx.now_iso()
     deals = [
-        {
-            **row,
-            "from_club_id": dao.resolve_club_id(row.get("from_club_name"), club_map),
-            "to_club_id": dao.resolve_club_id(row.get("to_club_name"), club_map),
-        }
+        _attach_deal_attr_snapshot(
+            {
+                **row,
+                "from_club_id": dao.resolve_club_id(row.get("from_club_name"), club_map),
+                "to_club_id": dao.resolve_club_id(row.get("to_club_name"), club_map),
+            },
+            now,
+        )
         for row in payload["deals"]
     ]
     board = [{**row, "positions_json": _dump_json(row.get("positions"))} for row in board]
-    now = ctx.now_iso()
     with dao.transaction(ctx.conn):
         dao.replace_market(ctx.conn, listings, deals, board, now)
-        # 成交属性快照（迁移 6，2026-11-07 用户裁决）：平台成交无上游属性快照，
-        # 用同步时的当前属性近似（球员特点变化小），历史无快照行一并回填；
-        # 一次性捕获后不覆盖。JOBS 顺序 player_attrs 先于 market，取到的就是本轮最新。
-        enriched = dao.backfill_deal_attrs(ctx.conn, dao.ATTRS_SNAPSHOT_VERSION, now)
+        # 成交属性快照（迁移 6，2026-11-07 用户裁决）：平台成交暂无上游属性快照，
+        # 用同步时的当前属性近似补记；捕获滞后 >24h 的历史行按「现属性全体 −1」
+        # 派生（derived_v1），刚成交的存原样（raw_v1）；平台以后加发 playerAttrs
+        # 的行走 deal_time_v1 精确值，重放时 COALESCE 自动升级覆盖派生值。
+        # JOBS 顺序 player_attrs 先于 market，取到的就是本轮最新。
+        enriched = dao.backfill_deal_attrs(ctx.conn, now)
         if enriched:
             logger.info("market：为 %d 笔成交补记属性快照（当前属性近似）", enriched)
         # 部署顺序 §5.4：插件先上线时旧接口无 nextCursor，首轮回填即置 done 闩死；
@@ -593,16 +598,19 @@ async def _sync_deals_history(ctx: SyncContext) -> int:
     else:
         logger.info("deals_history：本轮拉满 %d 页仍未穷尽，下轮从游标续传", DEALS_HISTORY_MAX_PAGES)
     club_map = dao.read_clubs_name_map(ctx.conn)
+    now = ctx.now_iso()
     rows = [
-        {
-            **row,
-            "from_club_id": dao.resolve_club_id(row.get("from_club_name"), club_map),
-            "to_club_id": dao.resolve_club_id(row.get("to_club_name"), club_map),
-        }
+        _attach_deal_attr_snapshot(
+            {
+                **row,
+                "from_club_id": dao.resolve_club_id(row.get("from_club_name"), club_map),
+                "to_club_id": dao.resolve_club_id(row.get("to_club_name"), club_map),
+            },
+            now,
+        )
         for page in pages
         for row in page
     ]
-    now = ctx.now_iso()
     with dao.transaction(ctx.conn):
         dao.upsert_deals(ctx.conn, rows, now)
         if cursor is not None:
@@ -610,6 +618,24 @@ async def _sync_deals_history(ctx: SyncContext) -> int:
         if done:
             dao.set_meta(ctx.conn, META_DEALS_HISTORY_DONE, "1", now)
     return len(rows)
+
+
+def _attach_deal_attr_snapshot(row: dict, now: str | None) -> dict:
+    """平台成交行 → 带属性快照三列的落库行（迁移 6）。
+
+    上游将来在成交行里加发 `playerAttrs`（成交时全属性，精确）→ 存
+    deal_time_v1；未加发（现状）→ 三列留 NULL，由 backfill_deal_attrs 在
+    同一事务里按捕获滞后补记 raw_v1 / derived_v1。
+    """
+    attrs = row.get("playerAttrs")
+    if isinstance(attrs, dict) and attrs:
+        return {
+            **row,
+            "player_attrs_json": _dump_json(attrs),
+            "player_attrs_version": dao.ATTRS_DEALTIME_VERSION,
+            "player_attrs_captured_at": now,
+        }
+    return row
 
 
 def _dump_json(value) -> str | None:

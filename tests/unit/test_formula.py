@@ -186,3 +186,35 @@ class TestFoldName:
         assert len(formula.FOLD_MAP) == 87
         assert len(set(formula.FOLD_MAP)) == len(formula.FOLD_MAP)
         assert all(v == "" or (v.isascii() and v.islower()) for v in formula.FOLD_MAP.values())
+
+
+class TestShiftAttrsBack:
+    """历史成交派生快照（0.8.7 用户裁决）：白名单键全体 −1，元数据键不动。"""
+
+    def test_shifts_whitelisted_keys_only(self):
+        attrs = {
+            "CA": 83, "PA": 86, "finishing": 80, "composure": 55,
+            "Age": 24, "PosID1": 25, "PSID1": 1001, "RoleID1": 7,
+            "skillmoves": 3, "weakfoot": 4, "height": 180, "weight": 75,
+            "internationalrep": 2, "hashighqualityhead": 1, "TeamID": 3,
+            "preferredfoot": "Right",
+        }
+        out = formula.shift_attrs_back(attrs)
+        assert out["CA"] == 82 and out["PA"] == 85          # 用户例：CA83 → 成交 82
+        assert out["finishing"] == 79 and out["composure"] == 54
+        assert out["Age"] == 24 and out["PosID1"] == 25      # 标识/岁数不回退
+        assert out["PSID1"] == 1001 and out["RoleID1"] == 7
+        assert out["skillmoves"] == 3 and out["weakfoot"] == 4
+        assert out["height"] == 180 and out["weight"] == 75
+        assert out["internationalrep"] == 2 and out["hashighqualityhead"] == 1
+        assert out["TeamID"] == 3 and out["preferredfoot"] == "Right"
+        assert attrs["CA"] == 83  # 不改输入
+
+    def test_floor_at_one_and_type_preserved(self):
+        out = formula.shift_attrs_back({"CA": 2, "balance": 1, "vision": 55.5})
+        assert out["CA"] == 1 and out["balance"] == 1 and out["vision"] == 54.5  # 下限 1
+        assert isinstance(out["CA"], int) and isinstance(out["vision"], float)
+
+    def test_shift_parameter_and_unknown_keys_untouched(self):
+        out = formula.shift_attrs_back({"CA": 83, "newattr": 50}, shift=3)
+        assert out["CA"] == 80 and out["newattr"] == 50

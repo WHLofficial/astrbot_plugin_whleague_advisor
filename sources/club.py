@@ -24,6 +24,7 @@ from . import (
     build_url,
     optional_float,
     optional_int,
+    optional_mapping,
     optional_str,
     parse_json_body,
     require_key,
@@ -408,6 +409,10 @@ def parse_deals(payload: Any) -> dict:
                 "player_level": optional_float(row, "playerLevel", where),
                 "player_role": optional_str(row, "playerRole", where),
                 "snapshot_source": optional_str(row, "snapshotSource", where),
+                # 成交时全属性（迁移 6 契约）：平台加发 playerAttrs（与
+                # /api/players/meta attrs 同形状）后为精确快照；未加发恒 None，
+                # 由同步侧用当前属性近似补记（raw_v1 / derived_v1）。
+                "player_attrs": optional_mapping(row, "playerAttrs", where),
             }
         )
     return {"deals": out, "next_cursor": next_cursor, "has_more": has_more}
