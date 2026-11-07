@@ -40,7 +40,8 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     detail = bool(args.get("detail"))
     data: dict = {
         "player": {
-            "id": player["id"],
+            "id": player.get("fc_id"),
+            "fcId": player.get("fc_id"),
             "name": player.get("display_name") or player.get("name"),
             "clubId": player.get("club_id"),
             "clubName": player.get("club_name"),
@@ -155,7 +156,8 @@ async def _inactive_lookup(ctx: ToolContext, player: dict, *, detail: bool) -> d
     )
     data: dict = {
         "player": {
-            "id": None,
+            "id": fc_id,
+            "fcId": fc_id,
             "name": name,
             "clubId": None,
             "clubName": None,
@@ -224,7 +226,10 @@ async def _inactive_lookup(ctx: ToolContext, player: dict, *, detail: bool) -> d
         presentation=None if detail else PRESENTATION,
         caveats=caveats,
         stale=report["stale"],
-        hint="问估价用 whl_player_value；这是非活跃/自由身球员，不要编造合同、工资或违约金",
+        hint=(
+            "这是自由身/非活跃球员；如果用户在问身价、估价、值多少、能不能签"
+            "或定违约金，必须调用 whl_player_value 按属性估价，不要直接说估不出来。"
+        ),
     )
 
 
@@ -247,6 +252,7 @@ def _compact_data(full: dict) -> dict:
     return {
         "player": {
             "id": player.get("id"),
+            "fcId": player.get("fcId"),
             "name": player.get("name"),
             "clubId": player.get("clubId"),
             "clubName": player.get("clubName"),
@@ -257,6 +263,8 @@ def _compact_data(full: dict) -> dict:
         },
         "facts": {
             "level": ability.get("level"),
+            "ca": ability.get("ca"),
+            "pa": ability.get("pa"),
             "releaseFee": contract.get("releaseFee"),
             "wage": contract.get("wage"),
         },

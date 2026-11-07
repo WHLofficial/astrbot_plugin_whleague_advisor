@@ -2,6 +2,13 @@
 
 本文件从 0.6.0 起按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 记录；版本号遵循语义化版本。
 
+## [0.8.6] - 2026-11-07
+
+### Changed
+
+- 工具输出中的 `player.id` / `playerId` 统一为 FC ID，不再暴露数据库内部 ID；`player.fcId` 继续保留。
+- 自由身 `whl_player_lookup` 的默认 compact 数据补充 `ca` / `pa`，并提示问估价时改调 `whl_player_value`，避免把“lookup 没有价格”误判为“属性缺失”。
+
 ## [0.8.5] - 2026-11-06
 
 ### Changed
@@ -114,6 +121,7 @@
 - 修正球队薪资口径为「工资总额 m/半赛季」，不再使用「周薪」。
 - 修正文档与工具描述中过时的全量输出说明。
 
+[0.8.6]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.6
 [0.8.5]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.5
 [0.8.4]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.4
 [0.8.3]: https://github.com/WHLofficial/astrbot_plugin_whleague_advisor/releases/tag/v0.8.3

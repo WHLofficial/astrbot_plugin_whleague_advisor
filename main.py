@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.5）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.6）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,11 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.6 球员 ID 统一：
+- 工具输出中的 player.id 统一为 FC ID，不再暴露内部 ID；同时保留 fcId；
+- 自由身 lookup 的 compact 补 CA/PA，并明确提示问估价时改调
+  whl_player_value，避免模型把“lookup 没价格”误判为“属性缺失”。
 
 v0.8.5 估价回复与缓存优化：
 - whl_player_value 默认返回 ability，先讲球员特点，违约金只作价格约束，

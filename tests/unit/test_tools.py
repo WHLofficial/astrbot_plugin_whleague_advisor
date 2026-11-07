@@ -345,6 +345,8 @@ class TestPlayerLookup:
         env = call(ctx, "whl_player_lookup", {"name": "Harry Kane", "detail": True})
         assert env["ok"] is True
         assert env["data"]["player"]["clubName"] == "利物浦"
+        assert env["data"]["player"]["id"] == env["data"]["player"]["fcId"]
+        assert env["data"]["player"]["id"] is not None
         assert env["data"]["contract"]["releaseFee"] == 50
         # CA 89 → 8 档（≥87）；31 岁 > 25 取 CA 档
         assert env["data"]["ability"]["level"] == 8
@@ -454,11 +456,26 @@ class TestPlayerLookup:
             assert data["player"]["age"] == 31
             assert data["player"]["clubName"] is None
             assert data["player"]["status"] == "free_agent"
+            assert data["player"]["id"] == 204935
+            assert data["player"]["fcId"] == 204935
             assert data["contract"]["releaseFee"] is None
             assert data["contract"]["wage"] is None
             assert data["ability"]["level"] == 7
+            assert data["ability"]["ca"] == 84 and data["ability"]["pa"] == 84
             assert "player_meta" in env["source"]
             assert "自由身" in env["summary"]
+
+            compact = call(
+                build_tool_ctx(conn, club=_MetaClub()),
+                "whl_player_lookup",
+                {"name": "Jordan Pickford"},
+            )
+            assert compact["ok"] is True
+            cdata = compact["data"]
+            assert cdata["player"]["id"] == 204935
+            assert cdata["player"]["fcId"] == 204935
+            assert cdata["facts"]["ca"] == 84 and cdata["facts"]["pa"] == 84
+            assert "whl_player_value" in compact["hint"]
         finally:
             conn.execute("DELETE FROM player_index WHERE fc_id = 204935")
 
@@ -642,6 +659,8 @@ class TestPlayerValue:
         assert env["ok"] is True
         data = env["data"]
         assert set(data) == {"player", "ability", "facts", "signals"}
+        assert data["player"]["id"] == data["player"]["fcId"]
+        assert data["player"]["id"] is not None
         assert data["ability"]["profile_score"] is not None
         assert data["ability"]["strengths"]
         assert data["facts"]["rc"] == 50 and data["facts"]["market"]["mid"] is not None
@@ -772,7 +791,10 @@ class TestPlayerValue:
             assert data["player"]["name"] == "Jordan Pickford"
             assert data["player"]["status"] == "free_agent"
             assert data["player"]["inactive"] is True
+            assert data["player"]["id"] == 204935
+            assert data["player"]["fcId"] == 204935
             assert data["ability"]["level"] == 7
+            assert data["ability"]["ca"] == 84 and data["ability"]["pa"] == 84
             assert data["fair"]["mid"] is not None
             assert data["fair"]["low"] is not None
             assert data["fair"]["high"] is not None
@@ -784,6 +806,16 @@ class TestPlayerValue:
             assert "没有成交区间" not in env["summary"]
             assert any("无合同" in c for c in env["caveats"])
             assert any("定违约金" in c for c in env["caveats"])
+
+            compact = call(
+                build_tool_ctx(conn, club=_MetaClub()),
+                "whl_player_value",
+                {"name": "Jordan Pickford"},
+            )
+            assert compact["ok"] is True
+            assert compact["data"]["player"]["id"] == 204935
+            assert compact["data"]["ability"]["ca"] == 84
+            assert compact["data"]["ability"]["pa"] == 84
         finally:
             conn.execute("DELETE FROM player_index WHERE fc_id = 204935")
 
@@ -810,6 +842,9 @@ class TestComparePlayers:
         assert "level" in diff and "fair_mid" in diff
         assert env["data"]["scenario"] is False
         assert env["data"]["players"][0]["player"]["name"] == "Harry Kane"
+        assert env["data"]["players"][0]["player"]["fcId"]
+        assert env["data"]["players"][1]["player"]["fcId"]
+        assert env["data"]["players"][0]["player"]["id"] == env["data"]["players"][0]["player"]["fcId"]
 
     def test_same_player_no_data(self, ctx):
         env = call(ctx, "whl_compare_players", {"a": "Harry Kane", "b": "Harry Kane"})

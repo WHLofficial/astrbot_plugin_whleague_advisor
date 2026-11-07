@@ -217,7 +217,8 @@ def _filter_board(rows: list[dict], club: dict | None, role: str | None) -> list
 def _listing_brief(l: dict) -> dict:
     return {
         "listingId": l.get("id"),
-        "playerId": l.get("player_id"),
+        "playerId": l.get("fc_id"),
+        "fcId": l.get("fc_id"),
         "playerName": l.get("player_name"),
         "seller": l.get("club_name") or "自由身",
         "type": l.get("type"),
@@ -231,7 +232,8 @@ def _listing_brief(l: dict) -> dict:
 
 def _board_brief(b: dict) -> dict:
     return {
-        "playerId": b.get("player_id"),
+        "playerId": b.get("fc_id"),
+        "fcId": b.get("fc_id"),
         "name": b.get("name"),
         "positions": b.get("positions_json"),
         "clubName": b.get("club_name"),

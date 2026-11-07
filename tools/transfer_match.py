@@ -89,7 +89,8 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
 
     facts = {
         "player": {
-            "id": player.get("id"),
+            "id": player.get("fc_id"),
+            "fcId": player.get("fc_id"),
             "name": player.get("display_name") or player.get("name"),
             "clubName": player.get("club_name"),
             "position": player.get("position"),

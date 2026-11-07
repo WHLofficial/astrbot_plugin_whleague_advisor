@@ -178,7 +178,8 @@ def _score_row(conn, player_id: int) -> dict | None:
 
 def _player_brief(player: dict) -> dict:
     return {
-        "id": player["id"],
+        "id": player.get("fc_id"),
+        "fcId": player.get("fc_id"),
         "name": player.get("display_name") or player.get("name"),
         "clubName": player.get("club_name"),
         "position": player.get("position"),

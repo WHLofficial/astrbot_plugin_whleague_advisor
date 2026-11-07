@@ -115,7 +115,8 @@ async def _inactive_value(
     row["as_of"] = ctx.now().isoformat(timespec="seconds")
     data = assemble_value_data(row, dao.read_all_model_params(ctx.conn))
     data["player"] = {
-        "id": None,
+        "id": fc_id,
+        "fcId": fc_id,
         "name": player.get("display_name") or player.get("name"),
         "clubName": None,
         "position": position,
@@ -224,7 +225,8 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     if assumptions:
         caveats.extend(row.get("assumptions_caveats") or [])
     data["player"] = {
-        "id": player["id"],
+        "id": player.get("fc_id"),
+        "fcId": player.get("fc_id"),
         "name": player.get("display_name") or player.get("name"),
         "clubName": player.get("club_name"),
         "position": player.get("position"),
@@ -306,6 +308,8 @@ def _compact_data(full: dict) -> dict:
         "player": player,
         "ability": {
             "level": (full.get("ability") or {}).get("level"),
+            "ca": (full.get("ability") or {}).get("ca"),
+            "pa": (full.get("ability") or {}).get("pa"),
             "profile_score": (full.get("ability") or {}).get("profile_score"),
             "strengths": (full.get("ability") or {}).get("strengths") or [],
             "weaknesses": (full.get("ability") or {}).get("weaknesses") or [],

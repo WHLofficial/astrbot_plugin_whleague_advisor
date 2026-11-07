@@ -171,7 +171,8 @@ def resolve_tournament(conn, query: str | None, scope: str | None = None) -> dic
 
 def _player_candidate(row: dict) -> dict:
     return {
-        "playerId": row.get("id"),
+        "playerId": row.get("fc_id"),
+        "fcId": row.get("fc_id"),
         "name": row.get("display_name") or row.get("name"),
         "clubName": row.get("club_name"),
         "position": row.get("position"),

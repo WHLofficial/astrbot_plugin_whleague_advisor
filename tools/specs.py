@@ -23,7 +23,7 @@ SPECS: dict[str, dict] = {
     },
     "whl_player_lookup": {
         "name": {"type": "string", "required": True, "desc": "球员名（拉丁名；中文请先译成拉丁名）"},
-        "detail": {"type": "bool", "default": False, "desc": "true=合同/CA（当前能力）/PA（潜力）/工资全量 + 完整百分位；默认只给判断素材"},
+        "detail": {"type": "bool", "default": False, "desc": "true=合同/CA（当前能力）/PA（潜力）/工资全量 + 完整百分位；默认只给判断素材。自由身/非活跃球员也支持；问估价/身价/定违约金时改调 whl_player_value"},
     },
     "whl_market_board": {
         "position": {"type": "string", "choices": POSITIONS, "desc": "平台位置名过滤"},
