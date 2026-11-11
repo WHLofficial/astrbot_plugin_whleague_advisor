@@ -214,18 +214,23 @@ class TestTeamBrief:
         assert "第 3 名" in env["summary"]
 
     def test_default_compact_judgement_material(self, ctx):
-        """默认只给判断素材：5 个 signals + 顶层 presentation，不暴露 standing/squad/recent。"""
+        """默认给评价素材：战绩/分差、攻防/阵容信号、关键球员、多线赛事。"""
         env = call(ctx, "whl_team_brief", {"team": "利物浦"})
         assert env["ok"] is True
         data = env["data"]
         assert data["club"]["name"] == "利物浦" and data["via"] == "explicit"
-        assert set(data) == {"club", "via", "facts", "signals"}
+        assert {"club", "via", "facts", "signals"} <= set(data)
         assert data["facts"]["rank"] == 3 and data["facts"]["points"] == 20
+        assert "record" in data["facts"] and "goals" in data["facts"]
         assert "next" in data["facts"]
-        assert set(data["signals"]) == {"draws", "squad", "form", "attack", "defense"}
+        assert set(data["signals"]) == {"draws", "squad", "quality", "form", "attack", "defense"}
         assert all(isinstance(v, str) and v for v in data["signals"].values())
-        assert "不要列数字清单" in env["presentation"]
-        assert "standing" not in data and "squad" not in data and "recent" not in data
+        assert 1 <= len(data["keyPlayers"]) <= 3
+        assert data["keyPlayers"][0]["fcId"] is not None
+        assert data["competitions"]
+        assert "不要逐项罗列" in env["presentation"]
+        assert "没有明显问题不要硬找" in env["presentation"]
+        assert "standing" not in data and "recent" not in data
         assert "第 3 名" not in env["summary"]
         assert "None" not in json.dumps(env, ensure_ascii=False)
 

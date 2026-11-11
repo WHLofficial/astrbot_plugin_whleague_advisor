@@ -19,7 +19,11 @@ from .resolve import (
 )
 
 SOURCE = "local_sqlite"
-PRESENTATION = "先给一句判断；挑一个最突出的信号展开，其余一句带过；不要列数字清单。"
+PRESENTATION = (
+    "评价球队时先给一句结论；结合排名/争冠或保级形势、攻防表现、阵容质量、关键球员、"
+    "近期状态和多线赛事自然展开；有值得肯定的就说，有明显问题就说，没有明显问题不要硬找；"
+    "用少量关键数字做证据，不要逐项罗列；不编战术、伤病、xG。"
+)
 
 
 async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
@@ -43,17 +47,22 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
     if person is not None:
         data["person"] = _person_brief(person)
 
-    # 排名：找该 club 所在赛事的主阶段行
+    # 排名：主赛事用于排名/分差；所有赛事用于评价多线表现
     standings_row = None
     tournament_name = None
     league_rows: list[dict] = []
+    competitions: list[dict] = []
     for t in dao.read_tournaments(ctx.conn):
         row = dao.read_standings_for_team(ctx.conn, t["id"], club["id"])
-        if row is not None:
+        if row is None:
+            continue
+        competitions.append(_competition_brief(t, row))
+        if standings_row is None:
             standings_row = row
             tournament_name = t.get("name")
             league_rows = dao.read_standings(ctx.conn, t["id"], limit=100)
-            break
+    if competitions:
+        data["competitions"] = competitions
     if standings_row is not None:
         data["standing"] = {
             "tournament": tournament_name,
@@ -70,10 +79,13 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         seniors = [p for p in players if p.get("status") != "trainee"]
         trainees = [p for p in players if p.get("status") == "trainee"]
         wage_total = round(sum(float(p.get("wage") or 0) for p in players), 2)
+        ages = [float(p["age"]) for p in players if p.get("age") is not None]
         data["squad"] = {
             "senior": len(seniors), "trainee": len(trainees),
             "total_wage_m": wage_total,
             "avg_ca": club.get("avg_ca"),
+            "total_value_m": club.get("total_value"),
+            "avg_age": round(sum(ages) / len(ages), 1) if ages else None,
         }
 
     # 近期战绩 / 下一场（fixtures 里 club 名匹配；tour 队名 = club 名去 (CPU)）
@@ -99,7 +111,7 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         presentation = None
     else:
         summary = f"已查到{club['name']}的球队概况。"
-        payload = _compact_data(club, data, via, league_rows, ctx.conn)
+        payload = _compact_data(club, data, via, league_rows, ctx.conn, players)
         presentation = PRESENTATION
     return ok_envelope(
         as_of=report["as_of"],
@@ -193,7 +205,7 @@ def conn_players_of_club(conn, club_id: int) -> list[dict]:
     return [
         dict(r)
         for r in conn.execute(
-            "SELECT id, name, display_name, position, age, ca, pa, wage, release_fee, status, "
+            "SELECT id, fc_id, name, display_name, position, age, ca, pa, wage, release_fee, status, "
             "transfer_listed, list_price, not_for_sale, protected FROM players "
             "WHERE active = 1 AND club_id = ? ORDER BY id",
             (club_id,),
@@ -289,10 +301,83 @@ def _full_summary(club: dict, data: dict) -> str:
     return summary
 
 
-def _compact_data(club: dict, full: dict, via: str, league_rows: list[dict], conn) -> dict:
-    """默认给判断素材：facts（最多 rank/points/next）+ 5 个 signals。
+def _record_text(row: dict) -> str | None:
+    won, drawn, lost = row.get("won"), row.get("drawn"), row.get("lost")
+    if won is None and drawn is None and lost is None:
+        return None
+    return f"{won or 0}胜{drawn or 0}平{lost or 0}负"
 
-    原始 standing/squad/recent 只在 detail=true 时返回；模型不再有逐字段可抄的表格。
+
+def _goals_text(row: dict) -> str | None:
+    if row.get("gf") is None and row.get("ga") is None:
+        return None
+    return f"{row.get('gf', 0)}/{row.get('ga', 0)}"
+
+
+def _competition_brief(tournament: dict, row: dict) -> dict:
+    item: dict = {"tournament": tournament.get("name")}
+    for key in ("rank", "points", "played"):
+        if row.get(key) is not None:
+            item[key] = row[key]
+    record = _record_text(row)
+    if record:
+        item["record"] = record
+    goals = _goals_text(row)
+    if goals:
+        item["goals"] = goals
+    if row.get("form"):
+        item["form"] = row["form"]
+    return item
+
+
+def _gap_text(st: dict, rows: list[dict]) -> str | None:
+    rank, points = st.get("rank"), st.get("points")
+    if rank is None or points is None or not rows:
+        return None
+    leader_points = rows[0].get("points")
+    if leader_points is None:
+        return None
+    if rank == 1:
+        if len(rows) > 1 and rows[1].get("points") is not None:
+            return f"领跑，领先第2名 {points - rows[1]['points']:g} 分"
+        return "领跑"
+    gap_top = leader_points - points
+    if rank > 4 and len(rows) >= 4 and rows[3].get("points") is not None:
+        gap_four = rows[3]["points"] - points
+        return f"落后榜首 {gap_top:g} 分，距前四 {gap_four:g} 分"
+    if rank <= 4 and len(rows) >= 5 and rows[4].get("points") is not None:
+        lead_five = points - rows[4]["points"]
+        return f"落后榜首 {gap_top:g} 分，领先第5名 {lead_five:g} 分"
+    return f"落后榜首 {gap_top:g} 分"
+
+
+def _key_players(players: list[dict]) -> list[dict]:
+    seniors = [p for p in players if p.get("status") != "trainee"]
+    seniors.sort(key=lambda p: (p.get("ca") is None, -(p.get("ca") or 0)))
+    out: list[dict] = []
+    for p in seniors[:3]:
+        out.append({
+            "name": p.get("display_name") or p.get("name"),
+            "fcId": p.get("fc_id"),
+            "position": p.get("position"),
+            "age": p.get("age"),
+            "ca": p.get("ca"),
+        })
+    return out
+
+
+def _compact_data(
+    club: dict,
+    full: dict,
+    via: str,
+    league_rows: list[dict],
+    conn,
+    players: list[dict],
+) -> dict:
+    """默认给评价素材：战绩/分差、攻防与阵容信号、关键球员、多线赛事。
+
+    原始 standing/squad/recent 只在 detail=true 时返回；这里不预设“必须夸/必须骂”，
+    由模型根据素材自然判断。
     """
     st = full.get("standing") or {}
     rows = league_rows or []
@@ -307,17 +392,29 @@ def _compact_data(club: dict, full: dict, via: str, league_rows: list[dict], con
     senior = _num(club.get("squad_senior"))
     if not senior:
         senior = _num(squad.get("senior"))
+    clubs = dao.read_clubs(conn)
     club_seniors = {
         _strip_cpu(c.get("name")): _num(c.get("squad_senior"))
-        for c in dao.read_clubs(conn)
+        for c in clubs
     }
     senior_values = [club_seniors.get(_strip_cpu(r.get("team_name"))) for r in rows]
+    avg_ca_values = [_num(c.get("avg_ca")) for c in clubs]
+    avg_ca = _num(club.get("avg_ca"))
 
     facts: dict = {}
     if st.get("rank") is not None:
         facts["rank"] = st["rank"]
     if st.get("points") is not None:
         facts["points"] = st["points"]
+    record = _record_text(st)
+    if record:
+        facts["record"] = record
+    goals = _goals_text(st)
+    if goals:
+        facts["goals"] = goals
+    gap = _gap_text(st, rows)
+    if gap:
+        facts["gap"] = gap
     next_text = _next_match_text(full.get("next_match"), club)
     if next_text:
         facts["next"] = next_text
@@ -327,18 +424,39 @@ def _compact_data(club: dict, full: dict, via: str, league_rows: list[dict], con
                        "偏少", "正常", "偏多"),
         "squad": _band(senior, _quantile(senior_values, 0.25), _quantile(senior_values, 0.75),
                        "薄", "一般", "厚"),
+        "quality": _band(avg_ca, _quantile(avg_ca_values, 0.25), _quantile(avg_ca_values, 0.75),
+                         "偏弱", "一般", "强"),
         "form": _form_signal(st.get("form")),
         "attack": _band(attack_rate, _quantile(attack_values, 0.25), _quantile(attack_values, 0.75),
                         "弱", "一般", "强"),
         "defense": _band(defense_rate, _quantile(defense_values, 0.25), _quantile(defense_values, 0.75),
                          "稳", "一般", "漏", lower_is_better=True),
     }
-    return {
+
+    squad_brief = {
+        key: value
+        for key, value in (
+            ("avgCa", squad.get("avg_ca")),
+            ("totalWageM", squad.get("total_wage_m")),
+            ("totalValueM", squad.get("total_value_m")),
+            ("avgAge", squad.get("avg_age")),
+        )
+        if value is not None
+    }
+    payload: dict = {
         "club": {"id": club["id"], "name": club["name"], "tier": club.get("tier")},
         "via": via,
         "facts": facts,
         "signals": signals,
     }
+    if squad_brief:
+        payload["squad"] = squad_brief
+    key_players = _key_players(players)
+    if key_players:
+        payload["keyPlayers"] = key_players
+    if full.get("competitions"):
+        payload["competitions"] = full["competitions"]
+    return payload
 
 
 def _next_match_text(nm: dict | None, club: dict) -> str | None:
