@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import statistics
+
 from ..db import dao
 from ..guard.errors import AMBIGUOUS, NO_DATA, NOT_FOUND, ToolError, ok_envelope
 from .context import CallContext, ToolContext
@@ -20,9 +22,32 @@ from .resolve import (
 
 SOURCE = "local_sqlite"
 PRESENTATION = (
-    "评价球队时先给一句结论；结合排名/争冠或保级形势、攻防表现、阵容质量、关键球员、"
-    "近期状态和多线赛事自然展开；有值得肯定的就说，有明显问题就说，没有明显问题不要硬找；"
-    "用少量关键数字做证据，不要逐项罗列；不编战术、伤病、xG。"
+    "评价球队时先给一句自己的判断；从排名/争冠保级形势、攻防表现、阵容结构（核心、主力区间、"
+    "短板位置组）、关键球员、近期状态、多线赛事、工资里选 2–3 个最有反差的角度展开，"
+    "不按字段顺序念；数字只做证据，一段里 2–3 个足够，不堆数据；有好说好，有明显问题就说，"
+    "没有明显问题不要硬找；可以带一句主观反应，但判断不能和数据矛盾；不编战术、伤病、xG、"
+    "消费券；CPU 队不提工资。用户说“锐评”或语气明显挑衅时可以更直接、更损一点，"
+    "普通评价保持克制。一段话说完，不列清单。\n"
+    "好例（学方法，别照抄）：“贝蒂斯像两支队：联赛 11 场只进 6 个，进攻确实没产出；"
+    "杯赛 3 场 2 胜 1 负又活了。门将也差点意思。”\n"
+    "坏例：“第12，3胜8负，进6丢22，攻击力真拉胯。”——先念流水账再贴空泛标签，"
+    "没有判断也没有解释。"
+)
+
+# 位置组映射（规格写死）：RW/LW 归 FW（修复 role_group 把边锋算进中场导致「锋线只剩 ST」
+# 的失真）；RM/LM 按位置名字面归 MF；未知位置不入组、不入主力池。
+POSITION_GROUPS: dict[str, str] = {
+    "GK": "GK",
+    "CB": "DF", "RB": "DF", "LB": "DF",
+    "CDM": "MF", "CM": "MF", "CAM": "MF", "RM": "MF", "LM": "MF",
+    "RW": "FW", "LW": "FW", "ST": "FW",
+}
+# 主力池 12 人 = 1 门将 + 4 后卫 + 4 中场 + 3 前锋，各组内按 CA 取最高；不足配额按实际取。
+CORE_QUOTA = {"GK": 1, "DF": 4, "MF": 4, "FW": 3}
+GROUP_ORDER = ("GK", "DF", "MF", "FW")
+CORE_CAVEAT = (
+    "阵容结构按主力池估算（1 门将 + 4 后卫 + 4 中场 + 3 前锋，各组取 CA 最高），"
+    "不是真实首发；位置按主位置归类。"
 )
 
 
@@ -113,6 +138,8 @@ async def run(ctx: ToolContext, call: CallContext, args: dict) -> dict:
         summary = f"已查到{club['name']}的球队概况。"
         payload = _compact_data(club, data, via, league_rows, ctx.conn, players)
         presentation = PRESENTATION
+        if "squad" in payload:
+            caveats.append(CORE_CAVEAT)
     return ok_envelope(
         as_of=report["as_of"],
         source=SOURCE,
@@ -351,6 +378,55 @@ def _gap_text(st: dict, rows: list[dict]) -> str | None:
     return f"落后榜首 {gap_top:g} 分"
 
 
+def _core_profile(players: list[dict]) -> dict:
+    """主力池（1 GK + 4 DF + 4 MF + 3 FW，组内按 CA 取最高）的阵容结构素材。
+
+    口径（docs/team-evaluation-improvement-plan-2026-11-11「位置组与主力池规格」）：
+    - 候选：非 trainee（listed 算一线队）、位置可映射到四组、CA 非空。
+    - 不伪造人数：组内不足配额按实际入选数；coreCount 如实（0–12）。
+    - coreMedianCa/coreRange 只在入选 ≥1 人时输出；gkCa 无主力 GK 省略。
+    - weakestGroup 取「组内主力入选者平均 CA」最低的组；恰一个空组时该组即最弱
+      （缺人本身是最弱，weakestGroupCa 省略）；空组 ≥2 个无法唯一判定，两键都省略。
+    纯函数：只吃 players 明细行，不查库，可独立单测。
+    """
+    candidates: dict[str, list[int]] = {group: [] for group in GROUP_ORDER}
+    for p in players:
+        if p.get("status") == "trainee":
+            continue
+        ca = p.get("ca")
+        group = POSITION_GROUPS.get(p.get("position"))
+        if group is None or ca is None:
+            continue
+        candidates[group].append(ca)
+    core = {
+        g: sorted(cas, reverse=True)[: CORE_QUOTA[g]]
+        for g, cas in candidates.items()
+        if cas
+    }
+    selected = [ca for g in GROUP_ORDER for ca in core.get(g, ())]
+    profile: dict = {"coreCount": len(selected)}
+    senior_cas = [
+        p.get("ca") for p in players
+        if p.get("status") != "trainee" and p.get("ca") is not None
+    ]
+    if senior_cas:
+        profile["topCa"] = max(senior_cas)
+    if selected:
+        profile["coreMedianCa"] = round(float(statistics.median(selected)), 1)
+        profile["coreRange"] = f"{min(selected)}-{max(selected)}"
+        if core.get("GK"):
+            profile["gkCa"] = core["GK"][0]
+    empty = [g for g in GROUP_ORDER if g not in core]
+    if len(empty) == 1:
+        profile["weakestGroup"] = empty[0]
+    elif not empty:
+        means = {g: sum(cas) / len(cas) for g, cas in core.items()}
+        weakest = min(GROUP_ORDER, key=lambda g: means[g])
+        profile["weakestGroup"] = weakest
+        profile["weakestGroupCa"] = round(means[weakest], 1)
+    return profile
+
+
 def _key_players(players: list[dict]) -> list[dict]:
     seniors = [p for p in players if p.get("status") != "trainee"]
     seniors.sort(key=lambda p: (p.get("ca") is None, -(p.get("ca") or 0)))
@@ -433,13 +509,20 @@ def _compact_data(
                          "稳", "一般", "漏", lower_is_better=True),
     }
 
+    # 阵容结构素材：全队 avgAge + 主力池（_core_profile）；avgCa/totalValueM 是死字段，
+    # totalWageM 迁到 finance（clubs.total_value 生产恒 NULL，不能叫身价）。
+    core = _core_profile(players) if players else {}
     squad_brief = {
         key: value
         for key, value in (
-            ("avgCa", squad.get("avg_ca")),
-            ("totalWageM", squad.get("total_wage_m")),
-            ("totalValueM", squad.get("total_value_m")),
             ("avgAge", squad.get("avg_age")),
+            ("topCa", core.get("topCa")),
+            ("coreCount", core.get("coreCount")),
+            ("coreMedianCa", core.get("coreMedianCa")),
+            ("coreRange", core.get("coreRange")),
+            ("gkCa", core.get("gkCa")),
+            ("weakestGroup", core.get("weakestGroup")),
+            ("weakestGroupCa", core.get("weakestGroupCa")),
         )
         if value is not None
     }
@@ -451,6 +534,14 @@ def _compact_data(
     }
     if squad_brief:
         payload["squad"] = squad_brief
+    # 一线队工资（非 trainee 求和）：CPU 队 total_wage=0 是缺数据不是省钱，整块省略；
+    # 非 CPU 但工资全空/为 0 也省略（输出 0 会被读成「零工资」）。消费券/预算/总身价无公开数据，不做。
+    if players and not club.get("is_cpu"):
+        wage_m = round(
+            sum(float(p.get("wage") or 0) for p in players if p.get("status") != "trainee"), 2
+        )
+        if wage_m > 0:
+            payload["finance"] = {"wageM": wage_m}
     key_players = _key_players(players)
     if key_players:
         payload["keyPlayers"] = key_players

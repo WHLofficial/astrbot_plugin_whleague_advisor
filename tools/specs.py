@@ -19,7 +19,7 @@ SPECS: dict[str, dict] = {
         "person": {"type": "string", "desc": "群成员名（可选，按其执教的队解析）"},
         "view": {"type": "string", "choices": ("team", "person"), "default": "team", "desc": "team=球队数据 / person=个人卡"},
         "scope": {"type": "string", "default": "me", "desc": "team/person 都缺时按发送者绑定解析"},
-        "detail": {"type": "bool", "default": False, "desc": "true=完整排名/阵容/近期战绩；默认给评价素材（战绩/分差/攻防/阵容/关键球员/多线）"},
+        "detail": {"type": "bool", "default": False, "desc": "true=完整排名/阵容/近期战绩；默认给评价素材（战绩/分差/阵容结构/关键球员/多线/一线队工资）"},
     },
     "whl_player_lookup": {
         "name": {"type": "string", "required": True, "desc": "球员名（拉丁名；中文请先译成拉丁名）"},

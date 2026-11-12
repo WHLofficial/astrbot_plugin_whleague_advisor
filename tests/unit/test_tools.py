@@ -21,6 +21,7 @@ context_mod = import_plugin("tools.context")
 facade = import_plugin("tools.facade")
 resolve_mod = import_plugin("tools.resolve")
 specs_mod = import_plugin("tools.specs")
+team_mod = import_plugin("tools.team")
 
 CLUB_BASE = "https://club.invalid"
 GROUP = "10001"
@@ -228,7 +229,7 @@ class TestTeamBrief:
         assert 1 <= len(data["keyPlayers"]) <= 3
         assert data["keyPlayers"][0]["fcId"] is not None
         assert data["competitions"]
-        assert "不要逐项罗列" in env["presentation"]
+        assert "不按字段顺序" in env["presentation"]
         assert "没有明显问题不要硬找" in env["presentation"]
         assert "standing" not in data and "recent" not in data
         assert "第 3 名" not in env["summary"]
@@ -349,6 +350,234 @@ class TestTeamBrief:
     def test_person_unknown_is_not_found(self, ctx):
         env = call(ctx, "whl_team_brief", {"person": "路人"}, sender="999")
         assert env["error"]["code"] == "NOT_FOUND"
+
+
+class TestTeamBriefSquadMaterial:
+    """球队评价素材改造（team-evaluation-improvement-plan 2026-11-11 断言清单）：
+
+    squad 扩展主力池字段、finance 只留一线队工资、多赛事全量、caveat 与 presentation。
+    """
+
+    def test_squad_core_pool_structure(self, ctx):
+        """fixture 下利物浦 senior 仅 Kane：主力池 1 人，GK/DF/MF ≥2 空组不硬指最弱。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        assert env["ok"] is True
+        data = env["data"]
+        assert set(data["squad"]) == {"avgAge", "topCa", "coreCount", "coreMedianCa", "coreRange"}
+        assert data["squad"]["coreCount"] == 1
+        assert data["squad"]["coreMedianCa"] == 89.0
+        assert data["squad"]["coreRange"] == "89-89"
+        assert data["squad"]["topCa"] == 89
+        # 利物浦唯一 GK（Verbruggen）是 trainee，不算主力 → gkCa 省略
+        assert "gkCa" not in data["squad"]
+        # GK/DF/MF 三组全空（≥2 空组无法唯一判定）→ weakest 两键省略
+        assert "weakestGroup" not in data["squad"]
+        assert "weakestGroupCa" not in data["squad"]
+        # 死字段删除：avgCa 含 trainee、totalValueM 生产恒 NULL、totalWageM 迁 finance
+        assert "avgCa" not in data["squad"]
+        assert "totalWageM" not in data["squad"]
+        assert "totalValueM" not in data["squad"]
+
+    def test_finance_senior_wage_only(self, ctx):
+        """wageM = 非 trainee 工资求和：senior 仅 Kane 5.5；trainee 各 0.75 不计入。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        assert env["ok"] is True
+        assert env["data"]["finance"]["wageM"] == 5.5
+        assert set(env["data"]["finance"]) == {"wageM"}
+
+    def test_cpu_team_has_no_finance(self, ctx):
+        """CPU 队不输出工资块（冒烟：fixture 里曼城无 players 行，finance 本就不出现；
+        is_cpu 分支本身的正反断言见 test_finance_gate_is_cpu_flag）。"""
+        env = call(ctx, "whl_team_brief", {"team": "曼城"})
+        assert env["ok"] is True
+        assert "finance" not in env["data"]
+
+    def test_finance_gate_is_cpu_flag(self, ctx):
+        """is_cpu 分支正反对照：同一名带工资 senior，CPU 队无 finance，非 CPU 队输出 wageM。"""
+        player = {"status": "normal", "position": "ST", "ca": 80, "wage": 3.0,
+                  "display_name": "测试锋", "fc_id": 1, "age": 25}
+        cpu = {"id": 10, "name": "曼城", "tier": 1, "is_cpu": 1,
+               "avg_ca": 75.0, "squad_senior": 1, "total_value": None}
+        human = dict(cpu, id=9, name="利物浦", is_cpu=0)
+        no_finance = team_mod._compact_data(cpu, {}, "explicit", [], ctx.conn, [player])
+        with_finance = team_mod._compact_data(human, {}, "explicit", [], ctx.conn, [player])
+        assert "finance" not in no_finance
+        assert with_finance["finance"] == {"wageM": 3.0}
+
+    def test_no_coupon_or_budget_or_value_fields(self, ctx):
+        """消费券/预算/总身价没有公开数据：字段与文案键都不出现。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        assert env["ok"] is True
+        text = json.dumps(env, ensure_ascii=False)
+        assert "coupon" not in text and "voucher" not in text
+        assert "totalValueM" not in text and "budgetM" not in text
+
+    def test_multi_competitions_all_returned(self, ctx):
+        """多赛事：fixture 下利物浦在顶级联赛 + 冠军杯都有积分行，全部返回。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        assert env["ok"] is True
+        assert len(env["data"]["competitions"]) == 2
+
+    def test_core_pool_caveat(self, ctx):
+        """squad 块存在时 caveats 追加主力池口径说明。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        assert any("不是真实首发" in c for c in env["caveats"])
+
+    def test_presentation_style_rules(self, ctx):
+        """风格规则与好例/坏例随响应同行（学方法，别照抄）。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦"})
+        p = env["presentation"]
+        for token in ("不按字段顺序", "没有明显问题不要硬找", "锐评", "别照抄", "像两支队", "流水账"):
+            assert token in p
+
+    def test_detail_path_keeps_raw_squad_no_core_caveat(self, ctx):
+        """detail=true 回归：squad 保持原始聚合字段（计划范围外，不动），不带主力池
+        caveat，presentation 关闭，summary 仍是全量口径。"""
+        env = call(ctx, "whl_team_brief", {"team": "利物浦", "detail": True})
+        assert env["ok"] is True
+        assert env.get("presentation") is None  # ok_envelope 对 None 省略该键
+        assert env["data"]["squad"] == {
+            "senior": 1, "trainee": 2, "total_wage_m": 7.0,
+            "avg_ca": 79.5, "total_value_m": None, "avg_age": 25.3,
+        }
+        assert "不是真实首发" not in "".join(env["caveats"])
+        assert "finance" not in env["data"]
+        assert "工资总额 7m/半赛季" in env["summary"]
+
+    def test_compact_data_all_trainee_core_count_zero_passes_filter(self, ctx):
+        """全 trainee 穿过 _compact_data 的 `if value is not None` 过滤：
+        coreCount=0 是有效信息不能被滤掉，squad 块只剩 avgAge + coreCount；
+        一线队工资为 0 → finance 省略。"""
+        club = {"id": 9, "name": "利物浦", "tier": 1, "is_cpu": 0,
+                "avg_ca": 70.0, "squad_senior": 2, "total_value": None}
+        players = [
+            {"status": "trainee", "position": "GK", "ca": 70, "wage": 0.75,
+             "display_name": "青训门", "fc_id": 1, "age": 25},
+            {"status": "trainee", "position": "ST", "ca": 88, "wage": 0.75,
+             "display_name": "青训锋", "fc_id": 2, "age": 25},
+        ]
+        payload = team_mod._compact_data(
+            club, {"squad": {"avg_age": 25.0}}, "explicit", [], ctx.conn, players
+        )
+        assert payload["squad"] == {"avgAge": 25.0, "coreCount": 0}
+        assert "finance" not in payload
+        assert "keyPlayers" not in payload
+
+
+def _pl(position, ca, status="normal"):
+    """构造 _core_profile 的最小球员行（纯函数只读 status/position/ca）。"""
+    return {"name": str(position), "position": position, "ca": ca, "status": status}
+
+
+class TestCoreProfile:
+    """_core_profile 纯函数：位置组映射、配额截断、不足/空组行为（规格节写死口径）。"""
+
+    def test_position_group_mapping(self):
+        """各标准位置各一名 CA=70 → 四组各按配额取满 1+4+4+3；未知位置/None 不计组。
+
+        MF 放 5 名候选（CDM/CM/CAM/RM/LM）抢 4 个配额，顺带锁「RM/LM 归 MF」。
+        """
+        players = [_pl(pos, 70) for pos in (
+            "GK", "CB", "RB", "LB", "CB", "CDM", "CM", "CAM", "RM", "LM", "RW", "LW", "ST",
+        )]
+        core = team_mod._core_profile(players)
+        assert core["coreCount"] == 12
+        assert core["gkCa"] == 70
+        assert core["coreRange"] == "70-70"
+        # 未知位置（"XY"）/ position=None 即使 CA 很高也不计入任何组、不入主力池
+        core2 = team_mod._core_profile(players + [_pl("XY", 99), _pl(None, 99)])
+        assert core2["coreCount"] == 12
+        assert core2["coreRange"] == "70-70"
+
+    def test_wingers_count_into_fw_quota(self):
+        """RW/LW 与 ST 同组且配额 3：5 名锋线候选只取 CA 最高 3 人
+        （若边锋被算进 MF——旧 role_group 行为——coreCount 会是 5）。"""
+        core = team_mod._core_profile([
+            _pl("ST", 79), _pl("ST", 80), _pl("RW", 81), _pl("LW", 82), _pl("ST", 90),
+        ])
+        assert core["coreCount"] == 3
+        assert core["coreRange"] == "81-90"
+
+    def test_wide_mids_count_into_mf_quota(self):
+        """RM/LM 按位置名字面归 MF（配额 4）：5 名中场候选只取 4。"""
+        core = team_mod._core_profile([
+            _pl("CDM", 74), _pl("CM", 75), _pl("CAM", 76), _pl("RM", 77), _pl("LM", 78),
+        ])
+        assert core["coreCount"] == 4
+        assert core["coreRange"] == "75-78"
+
+    def test_defenders_count_into_df_quota(self):
+        """CB/RB/LB 计入 DF（配额 4）：6 名后卫候选只取 4。"""
+        core = team_mod._core_profile([
+            _pl("CB", 71), _pl("RB", 72), _pl("LB", 73), _pl("CB", 74), _pl("RB", 75), _pl("LB", 76),
+        ])
+        assert core["coreCount"] == 4
+        assert core["coreRange"] == "73-76"
+
+    def test_gk_quota_one(self):
+        """GK 配额 1：两名门将取 CA 最高者，gkCa 与入选者同源。"""
+        core = team_mod._core_profile([_pl("GK", 70), _pl("GK", 85)])
+        assert core["coreCount"] == 1
+        assert core["gkCa"] == 85
+
+    def test_full_squad_twelve_and_over_quota(self):
+        """满配 12 人：组内超出配额只取 CA 最高者；weakestGroup 取组均值最低线。"""
+        players = (
+            [_pl("GK", 70), _pl("GK", 69)]  # GK 配额 1 → 70 入选，69 落选
+            + [_pl("CB", 71), _pl("RB", 72), _pl("LB", 73), _pl("CB", 74), _pl("RB", 68)]
+            + [_pl("CDM", 75), _pl("CM", 76), _pl("CAM", 77), _pl("RM", 90), _pl("LM", 68)]
+            + [_pl("RW", 79), _pl("LW", 80), _pl("ST", 81)]
+        )
+        core = team_mod._core_profile(players)
+        assert core["coreCount"] == 12
+        assert core["coreRange"] == "70-90"
+        # 入选集 [70,71..74,75,76,77,90,79,80,81] 偶数位取中两数平均 → 75.5
+        assert core["coreMedianCa"] == 75.5
+        assert core["gkCa"] == 70
+        # 组均值：GK 70 < DF 72.5 < MF 79.5 < FW 80
+        assert core["weakestGroup"] == "GK"
+        assert core["weakestGroupCa"] == 70.0
+
+    def test_weakest_group_by_group_mean_not_max_or_min(self):
+        """weakestGroup 按组内入选者平均 CA（规格节口径）：
+        DF 均值 75.0 最低；按组内最高 CA 应判 MF（76 < 90/80/95），按组内最低 CA
+        应判 FW（59 < 62/76/90）——两种错误算法在本构造下都不得让测试通过。"""
+        players = (
+            [_pl("GK", 90)]
+            + [_pl("CB", 80), _pl("RB", 79), _pl("LB", 79), _pl("CB", 62)]
+            + [_pl("CDM", 76), _pl("CM", 76), _pl("CAM", 76), _pl("RM", 76)]
+            + [_pl("RW", 95), _pl("LW", 95), _pl("ST", 59)]
+        )
+        core = team_mod._core_profile(players)
+        assert core["coreCount"] == 12
+        assert core["weakestGroup"] == "DF"
+        assert core["weakestGroupCa"] == 75.0
+
+    def test_missing_gk_weakest_is_gk_without_ca(self):
+        """无主力 GK：gkCa 省略；恰一个空组 → GK 即最弱（缺人本身是最弱），无 CA 值。"""
+        players = (
+            [_pl("CB", 71), _pl("RB", 72), _pl("LB", 73), _pl("CB", 74)]
+            + [_pl("CDM", 75), _pl("CM", 76), _pl("CAM", 77), _pl("RM", 78)]
+            + [_pl("RW", 79), _pl("LW", 80), _pl("ST", 81)]
+        )
+        core = team_mod._core_profile(players)
+        assert core["coreCount"] == 11
+        assert "gkCa" not in core
+        assert core["weakestGroup"] == "GK"
+        assert "weakestGroupCa" not in core
+
+    def test_all_trainee_core_count_zero(self):
+        """全 trainee：coreCount=0 如实输出，不伪造；其余键全省略。"""
+        core = team_mod._core_profile([
+            _pl("GK", 70, status="trainee"), _pl("ST", 88, status="trainee"),
+        ])
+        assert core == {"coreCount": 0}
+
+    def test_listed_counts_as_senior_and_missing_ca_skipped(self):
+        """listed 算一线队入池；CA 缺失不入池。"""
+        core = team_mod._core_profile([_pl("ST", None), _pl("CM", 78, status="listed")])
+        assert core["coreCount"] == 1
+        assert core["coreRange"] == "78-78"
 
 
 # ---- whl_player_lookup ----
