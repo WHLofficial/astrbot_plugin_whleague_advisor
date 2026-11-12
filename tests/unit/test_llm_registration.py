@@ -15,7 +15,6 @@ import json
 import re
 
 import pytest
-
 from conftest import import_plugin
 
 main_mod = None  # 延迟加载（需要假 astrbot 环境）
@@ -24,9 +23,9 @@ main_mod = None  # 延迟加载（需要假 astrbot 环境）
 def _load_main():
     global main_mod
     if main_mod is None:
+        import logging
         import sys
         import types
-        import logging
 
         def _module(name, **attrs):
             mod = types.ModuleType(name)
@@ -142,13 +141,13 @@ def test_required_params_documented_first_and_match_specs():
 def test_tool_descriptions_mention_boundary_and_hint():
     """§4.8 边界与 NOT_BOUND 语义写进工具描述（模型行为的最后一道防线）。"""
     plugin_cls = _load_main().WhleagueAdvisorPlugin
-    player_doc = getattr(plugin_cls, "whl_player_lookup").__doc__
+    player_doc = plugin_cls.whl_player_lookup.__doc__
     assert "拉丁" in player_doc and "NOT_A_PLAYER" in player_doc
-    team_doc = getattr(plugin_cls, "whl_team_brief").__doc__
+    team_doc = plugin_cls.whl_team_brief.__doc__
     assert "NOT_BOUND" in team_doc
-    value_doc = getattr(plugin_cls, "whl_player_value").__doc__
+    value_doc = plugin_cls.whl_player_value.__doc__
     assert "不能说「官方身价」" in value_doc  # 描述里是禁令，不是产出
-    compare_doc = getattr(plugin_cls, "whl_compare_players").__doc__
+    compare_doc = plugin_cls.whl_compare_players.__doc__
     assert "本联赛" in compare_doc
 
 

@@ -197,7 +197,7 @@ class WhleagueAdvisorPlugin(Star):
             return
         try:
             await self._start_data_layer()
-        except Exception:
+        except Exception:  # noqa: BLE001 - 数据层启动失败降级为空转，不影响 AstrBot 本体
             logger.exception(
                 "%s v%s 数据层启动失败：插件保持加载但不做同步（不影响 AstrBot 本体）",
                 PLUGIN_NAME,
@@ -379,7 +379,7 @@ class WhleagueAdvisorPlugin(Star):
                 coach_skill_body=skill_body,
                 round_amounts_to_five=self._flag("round_amounts_to_five", False),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - spec 构建失败降级为不注册 handoff
             logger.exception("%s：子 agent spec 构建失败，不注册 handoff", PLUGIN_NAME)
             return
         try:
@@ -410,7 +410,7 @@ class WhleagueAdvisorPlugin(Star):
             plugin_module_path = type(self).__module__
             for handoff in handoffs:
                 handoff.handler_module_path = plugin_module_path
-        except Exception:
+        except Exception:  # noqa: BLE001 - handoff 注册失败降级为主 agent 直调
             logger.exception("%s：handoff 工具注册失败，联赛问答降级为主 agent 直调 whl_*", PLUGIN_NAME)
             return
         self._subagent_tool_names = tuple(spec.handoff_name for spec in specs)
@@ -727,7 +727,7 @@ class WhleagueAdvisorPlugin(Star):
                     self.config.get("club_base_url"),
                     dao.collect_status_snapshot(self._conn),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - 状态读取失败回退基础文案
                 logger.exception("读取同步状态失败，回退基础状态文案")
                 reply += "\n（同步状态暂不可读）"
         elif not is_idle(self.config.get("enabled_groups"), self.config.get("club_base_url")):
@@ -746,7 +746,7 @@ class WhleagueAdvisorPlugin(Star):
             return action(self._conn, *args, **kwargs)
         except model_admin.ModelAdminError as exc:
             return model_admin.make_admin_error_reply(exc)
-        except Exception:
+        except Exception:  # noqa: BLE001 - 管理员命令失败转为文案，不抛给框架
             logger.exception("模型管理员命令执行失败")
             return "操作未执行：内部错误（详见 AstrBot 日志），模型状态未变。"
 

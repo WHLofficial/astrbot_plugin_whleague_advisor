@@ -1,0 +1,5 @@
+[tool.ruff]
+# 规则集沿用 ruff 0.16 的默认集合；required-version 锁住行为，升级 ruff 需显式复核。
+target-version = "py310"
+line-length = 120
+required-version = ">=0.16.0,<0.17.0"

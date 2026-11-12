@@ -11,7 +11,6 @@ import re
 import sqlite3
 
 import pytest
-
 from conftest import import_plugin
 
 dao = import_plugin("db.dao")
@@ -758,7 +757,7 @@ class TestPublishGate:
         """连续 3 次拒绝 → model_status=degraded_3x（决策 20，不自动切默认）。"""
         import asyncio
 
-        from conftest import FixtureTransport, seed_transaction_deals
+        from conftest import seed_transaction_deals
 
         conn, ctx = self._synced(all_routes)
         try:
@@ -861,7 +860,11 @@ class TestModelParams:
 
         conn = mem_conn()
         try:
-            from conftest import FixtureTransport, publish_pending_model, seed_transaction_deals
+            from conftest import (
+                FixtureTransport,
+                publish_pending_model,
+                seed_transaction_deals,
+            )
 
             ctx = SyncContext(conn=conn, club=ClubSource("https://club.invalid", transport=FixtureTransport(all_routes)), tour=None)
             outcomes = asyncio.run(run_full_sync(ctx))

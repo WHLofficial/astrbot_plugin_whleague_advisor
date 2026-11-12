@@ -327,7 +327,7 @@ _FOLD_SPEC = """
 0130=i 0131=i 0137=k 013d=l 013e=l 0141=l 0142=l 0144=n 0146=n 0148=n 0151=o
 0159=r 015a=s 015b=s 015e=s 015f=s 0160=s 0161=s 0163=t 0165=t 016f=u 0171=u
 017a=z 017b=z 017c=z 017d=z 017e=z 0218=s 0219=s 021a=t 021b=t 0301= 0308=
-""".split()
+""".split()  # noqa: SIM905 - 保持逐行可读的 87 项码表
 
 FOLD_MAP: dict[str, str] = {}
 for _token in _FOLD_SPEC:

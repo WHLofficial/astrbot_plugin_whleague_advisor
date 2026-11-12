@@ -21,6 +21,7 @@ from ..db import dao
 from . import fitting
 from .formula import (
     COMP_DEFAULT_PARAMS,
+    PROFILE_ATTRS,
     WAGE_DEFAULT_PARAMS,
     ability_level,
     age_adjustments,
@@ -30,7 +31,6 @@ from .formula import (
     role_group,
     trainee_activation_cost,
 )
-from .formula import PROFILE_ATTRS
 
 logger = logging.getLogger(__name__)
 
@@ -650,8 +650,8 @@ def context_from_published(
     trained_at: str,
 ) -> ModelContext:
     """已发布参数 → ModelContext（场景重算/发布/回滚重算共用，§4.6 只读已发布模型）。"""
-    comp_params, comp_fallback = _published_value(comp_row, _COMP_PARAM_KEYS)
-    wage_params, wage_fallback = _published_value(wage_row, _WAGE_PARAM_KEYS)
+    comp_params, _ = _published_value(comp_row, _COMP_PARAM_KEYS)
+    wage_params, _ = _published_value(wage_row, _WAGE_PARAM_KEYS)
     comp_source = "default" if comp_params is None else "persisted"
     wage_source = "default" if wage_params is None else "persisted"
     reason = None

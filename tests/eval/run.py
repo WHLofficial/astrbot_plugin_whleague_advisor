@@ -69,7 +69,7 @@ import time
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
 
@@ -1167,7 +1167,7 @@ def build_eval_event(
     from astrbot.core.platform.platform_metadata import PlatformMetadata
 
     class EvalGroupMessageEvent(AstrMessageEvent):
-        _sent_chains: list = []
+        _sent_chains: ClassVar[list] = []
 
         async def send(self, message):
             if message is None:
@@ -1259,12 +1259,12 @@ async def run_direct_case(
     step_until_done → AgentState.ERROR 检查 → get_final_llm_resp。
     build_main_agent 返回 None（provider 未配置）时明确报错，不静默跳过。
     """
+    from astrbot.core.agent.runners.base import AgentState
     from astrbot.core.astr_main_agent import (
         MainAgentBuildConfig,
         _get_session_conv,
         build_main_agent,
     )
-    from astrbot.core.agent.runners.base import AgentState
     from astrbot.core.config.agent_runner import resolve_context_compression_config
     from astrbot.core.provider.entities import ProviderRequest
 

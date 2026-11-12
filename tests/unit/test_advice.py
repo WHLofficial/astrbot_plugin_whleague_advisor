@@ -1,7 +1,6 @@
 """advice/ 纯函数单测：档位/百分位、假设场景重算（与基线同路径）、对比 diff、summary。"""
 
 import pytest
-
 from conftest import import_plugin
 
 advice = import_plugin("advice")

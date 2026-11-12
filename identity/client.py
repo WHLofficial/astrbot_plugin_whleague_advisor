@@ -37,7 +37,7 @@ class BindingsError(Exception):
 
 def sign_request(secret: str, ts: str, raw: str) -> str:
     """X-Sign = hex(HMAC-SHA256(secret, "POST|<path>|<ts>|<raw>"))，§4.7 原文。"""
-    message = f"POST|{PATH}|{ts}|{raw}".encode("utf-8")
+    message = f"POST|{PATH}|{ts}|{raw}".encode()
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
@@ -137,7 +137,7 @@ class BindingsClient:
                 return await self._transport("POST", self.base_url + PATH, headers=headers, body=body)
             except BindingsError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - 注入传输的异常同样归一
+            except Exception as exc:
                 raise BindingsError(f"绑定请求失败: {exc}") from exc
         return await self._post_aiohttp(body, headers)
 
@@ -148,10 +148,9 @@ class BindingsClient:
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
                 headers={"User-Agent": "WHL-Advisor/1.0"},
-            ) as session:
-                async with session.post(
-                    self.base_url + PATH, data=body.encode("utf-8"), headers=headers
-                ) as resp:
-                    return resp.status, await resp.text()
-        except Exception as exc:  # noqa: BLE001 - 网络/超时/风控一律归一
+            ) as session, session.post(
+                self.base_url + PATH, data=body.encode("utf-8"), headers=headers
+            ) as resp:
+                return resp.status, await resp.text()
+        except Exception as exc:
             raise BindingsError(f"绑定请求失败: {exc}") from exc

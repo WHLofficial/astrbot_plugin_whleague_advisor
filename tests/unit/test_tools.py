@@ -8,9 +8,9 @@ NOT_FOUND / NO_DATA / STALE / RATE_LIMITED / BAD_ARG），I01–I06 评测意图
 import asyncio
 import json
 import sqlite3
+from typing import ClassVar
 
 import pytest
-
 from conftest import FixtureTransport, import_plugin, load_fixture
 
 dao = import_plugin("db.dao")
@@ -1271,7 +1271,7 @@ class TestGuards:
 
     def test_no_qq_in_args_accepted(self, ctx):
         """工具入参契约：qq/user_id 不是任何工具的合法参数（§4.7）。"""
-        for _name, spec in specs_mod.SPECS.items():
+        for spec in specs_mod.SPECS.values():
             assert "qq" not in spec and "user_id" not in spec
 
     def test_envelope_json_serializable(self, ctx):
@@ -1334,7 +1334,7 @@ class TestSenderIdentity:
     def test_fetch_bindings_fills_missing_qq_from_group_cache(self, ctx):
         class _Bindings:
             enabled = True
-            calls = []
+            calls: ClassVar[list] = []
 
             async def fetch(self, group_id, qqs):
                 self.calls.append(qqs)

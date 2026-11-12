@@ -20,7 +20,7 @@ formula = import_plugin("services.formula")
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "generate_value_seed.py"
 _spec = importlib.util.spec_from_file_location("generate_value_seed_cli", _SCRIPT)
 cli = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(cli)  # noqa: E402 —— 加载即触发裸 services 导入兜底分支
+_spec.loader.exec_module(cli)
 
 
 def make_db(path: Path, *, with_model: bool) -> None:

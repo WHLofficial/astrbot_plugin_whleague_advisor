@@ -8,7 +8,6 @@ import sqlite3
 from datetime import datetime, timezone
 
 import pytest
-
 from conftest import FixtureTransport, SelectiveFailTransport, import_plugin
 
 dao = import_plugin("db.dao")

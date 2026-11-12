@@ -152,7 +152,6 @@ class SelectiveFailTransport:
         self.calls: list[dict] = []
 
     async def __call__(self, method: str, url: str, params: dict | None):
-        sources = import_plugin("sources")
         path = urlsplit(url).path
         self.calls.append({"method": method, "path": path, "params": params, "url": url})
         if any(p in path for p in self.fail_paths):

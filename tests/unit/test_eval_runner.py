@@ -193,8 +193,8 @@ class TestNumberChecker:
         assert 45.0 in values   # sum
         assert 2.0 in values    # count
         assert 22.5 in values   # avg（派生一律当小数）
-        assert dict((v, f) for v, f in value_set)[45.0] is True   # int+int → int
-        assert dict((v, f) for v, f in value_set)[22.5] is False
+        assert {v: f for v, f in value_set}[45.0] is True   # int+int → int
+        assert {v: f for v, f in value_set}[22.5] is False
 
     def test_non_json_result_falls_back_to_text_numbers(self, ev):
         value_set = ev.build_value_set(["最高出价 4，共 5 笔在谈"])
@@ -327,9 +327,9 @@ class TestPreconditions:
             "INSERT INTO group_members (group_id, qq, card, bound, refreshed_at, updated_at) "
             "VALUES ('g1', '3651001', '阿甲', 1, '2026-11-04', '2026-11-04')"
         )
-        ok, reason = ev.probe_precondition(conn, "member_coach:阿甲", group_id="g1")
+        ok, _ = ev.probe_precondition(conn, "member_coach:阿甲", group_id="g1")
         assert ok is True
-        ok, reason = ev.probe_precondition(conn, "member_coach:阿甲", group_id="g2")
+        ok, _reason = ev.probe_precondition(conn, "member_coach:阿甲", group_id="g2")
         assert ok is False
 
     def test_unknown_token_skips_with_reason(self, ev):

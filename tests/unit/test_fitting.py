@@ -6,12 +6,12 @@ model_wage_points.json / model_price_points.json 是 2026-11-05 生产公开接�
 量级锚：市场日波动会让点数与系数漂移，断言只锁形状、样本量与 R² 区间。
 """
 
+import itertools
 import json
 import math
-from pathlib import Path
+from typing import ClassVar
 
 import pytest
-
 from conftest import FIXTURES_DIR, import_plugin
 
 fitting = import_plugin("services.fitting")
@@ -223,7 +223,7 @@ class TestCompFitWeights:
 class TestRidgeHuberFit:
     """Phase 4（model-refit-plan §6）：Ridge 只罚角色系数 + Huber 稳健损失。"""
 
-    ROLE_OFFSET = {"CB": 0.0, "FB": 0.30, "MF": 0.15, "FW": 0.50}
+    ROLE_OFFSET: ClassVar[dict[str, float]] = {"CB": 0.0, "FB": 0.30, "MF": 0.15, "FW": 0.50}
 
     @classmethod
     def _points(cls, counts=None, *, jitter=None, offsets=None):
@@ -293,7 +293,7 @@ class TestRidgeHuberFit:
 
     def test_penalty_leaves_intercept_and_slope_unpenalized(self):
         """截距/level 斜率不罚：λ→∞ 时 [a, b] 退化为「不要角色项」的两列 OLS（不收缩）。"""
-        X, y, decay, present, _rows = self._design(self._points())
+        X, y, decay, _present, _rows = self._design(self._points())
         huge = [0.0, 0.0, 1e6, 1e6, 1e6]
         coef, _r2, _sd = fitting._ols(X, y, decay, huge)
         two_col, _r2b, _sdb = fitting._ols([row[:2] for row in X], y, decay)
@@ -309,7 +309,7 @@ class TestRidgeHuberFit:
             fit = fitting.fit_comp_regularized(pts, lambda_=lam)
             assert fit is not None and fit.lambda_ == lam
             norms.append(math.sqrt(sum(fit.coefs[r] ** 2 for r in fitting.DUMMY_ROLES)))
-        assert all(b < a for a, b in zip(norms, norms[1:])), norms
+        assert all(b < a for a, b in itertools.pairwise(norms)), norms
         assert norms[0] > 0.5 and norms[-1] < 0.1
         # 无正则时恢复真实角色溢价（0.30 / 0.15 / 0.50）
         raw = fitting.fit_comp_regularized(pts, lambda_=0.0)

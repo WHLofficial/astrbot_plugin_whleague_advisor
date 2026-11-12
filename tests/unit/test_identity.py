@@ -8,7 +8,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from conftest import import_plugin
 
 dao = import_plugin("db.dao")
@@ -91,7 +90,7 @@ class TestGroupMembersStore:
         try:
             store = group_members_mod.GroupMembersStore(conn)
             base = datetime(2026, 11, 5, 12, 0, 0, tzinfo=timezone.utc)
-            now_fn = lambda: base  # noqa: E731
+            now_fn = lambda: base
 
             class FakeBot:
                 def __init__(self, fail=False):
@@ -121,7 +120,7 @@ class TestGroupMembersStore:
             assert asyncio.run(group_members_mod.refresh_if_due(FakeEvent(bot), store, now_fn=now_fn)) is False
             assert len(bot.calls) == 1
             # TTL 过 → 再拉
-            later = lambda: base + timedelta(seconds=601)  # noqa: E731
+            later = lambda: base + timedelta(seconds=601)
             assert asyncio.run(group_members_mod.refresh_if_due(FakeEvent(bot), store, now_fn=later)) is True
             assert len(bot.calls) == 2
             # 拉取失败 → False 且不炸
@@ -165,7 +164,7 @@ class TestGroupMembersStore:
             assert sum(1 for r in results if r is True) == 1
             assert len(bot.calls) == 1
             # in-flight 释放后可再次到期拉取
-            later = lambda: base + timedelta(seconds=601)  # noqa: E731
+            later = lambda: base + timedelta(seconds=601)
             assert asyncio.run(group_members_mod.refresh_if_due(FakeEvent(bot), store, now_fn=later)) is True
             assert len(bot.calls) == 2
         finally:

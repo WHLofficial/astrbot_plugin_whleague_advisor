@@ -127,8 +127,8 @@ async def _inactive_lookup(ctx: ToolContext, player: dict, *, detail: bool) -> d
     fc_id = player.get("fc_id")
     attrs: dict = {}
     caveats: list[str] = [
-        "非活跃/自由身球员：身份来自全联盟索引，能力/位置按当前平台 meta 推断；"
-        "没有合同、违约金、工资数据，不要编造。",
+        ("非活跃/自由身球员：身份来自全联盟索引，能力/位置按当前平台 meta 推断；"
+        "没有合同、违约金、工资数据，不要编造。"),
     ]
     if fc_id is None:
         caveats.append("这名球员没有 fc_id，无法拉取平台属性。")

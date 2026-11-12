@@ -26,10 +26,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..db import dao
-from ..services import fitting
+from ..services import fitting, model_admin
 from ..services import scores as scores_svc
 from ..services.formula import fold_name
-from ..services import model_admin
 from ..sources.club import META_FC_IDS_MAX, ClubSource, parse_roster_line
 from ..sources.tour import TourSource
 
@@ -275,8 +274,7 @@ async def _sync_scores(ctx: SyncContext) -> int:
     players = dao.read_active_players(ctx.conn)
     if not players:
         raise _Skip("players 表为空（players 任务尚未成功过），跳过估价预计算")
-    from ..services import model_gate
-    from ..services import model_report
+    from ..services import model_gate, model_report
 
     now = ctx.now_iso()
     fingerprint = model_gate.data_fingerprint(ctx.conn)

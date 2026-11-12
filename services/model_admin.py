@@ -49,7 +49,6 @@ class ModelAdminError(ValueError):
 def _candidate_meta(candidate: dict, now: str) -> dict:
     """meta.model_candidate_json 形状：whl状态 与过渡标注的候选摘要（§4.2）。"""
     params = candidate.get("params") or {}
-    comp = params.get("comp") or {}
     return {
         "version": candidate.get("version"),
         "status": candidate.get("status"),

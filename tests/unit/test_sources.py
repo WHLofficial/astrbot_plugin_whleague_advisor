@@ -4,7 +4,6 @@ import asyncio
 import json
 
 import pytest
-
 from conftest import FixtureTransport, import_plugin, load_fixture
 
 sources = import_plugin("sources")
@@ -177,8 +176,6 @@ class TestTourSourceParsing:
 
 class TestFailurePaths:
     def test_non_200_raises_source_error(self):
-        transport = FixtureTransport({})
-
         async def broken(method, url, params):
             return HttpResponse(500, b"oops")
 

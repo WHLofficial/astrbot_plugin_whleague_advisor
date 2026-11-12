@@ -3,7 +3,6 @@
 import sqlite3
 
 import pytest
-
 from conftest import import_plugin, load_fixture
 
 dao = import_plugin("db.dao")
@@ -237,10 +236,9 @@ class TestTransaction:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             migrations.run_migrations(conn)
-            with pytest.raises(sqlite3.OperationalError):
-                with dao.transaction(conn):
-                    dao.set_meta(conn, "during", "1")
-                    conn.fail_next_commit = True
+            with pytest.raises(sqlite3.OperationalError), dao.transaction(conn):
+                dao.set_meta(conn, "during", "1")
+                conn.fail_next_commit = True
             # during 已回滚；连接回到 autocommit 可用状态
             assert dao.get_meta(conn, "during") is None
             dao.set_meta(conn, "after", "1")
@@ -251,8 +249,8 @@ class TestTransaction:
 
 class TestUpserts:
     def test_upsert_season_single_row(self, migrated_conn):
-        kw = dict(season=9, status="running", window_seq=2, window_status="open",
-                  window_opened_at="2026-10-30T07:42:06Z", window_closed_at=None)
+        kw = {"season": 9, "status": "running", "window_seq": 2, "window_status": "open",
+                  "window_opened_at": "2026-10-30T07:42:06Z", "window_closed_at": None}
         dao.upsert_season(migrated_conn, **kw, updated_at="t1")
         dao.upsert_season(migrated_conn, **{**kw, "window_status": "closed"}, updated_at="t2")
         rows = migrated_conn.execute("SELECT * FROM seasons").fetchall()

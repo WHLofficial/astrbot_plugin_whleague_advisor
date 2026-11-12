@@ -11,10 +11,18 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import re
 
 from ..db import dao
-from ..guard.errors import AMBIGUOUS, BAD_ARG, NOT_A_PLAYER, NOT_BOUND, NOT_FOUND, ToolError
+from ..guard.errors import (
+    AMBIGUOUS,
+    BAD_ARG,
+    NOT_A_PLAYER,
+    NOT_BOUND,
+    NOT_FOUND,
+    ToolError,
+)
 from ..identity.client import BindingsError, BindingsUnavailable
 from ..services.formula import fold_name_query
 from .context import CallContext, ToolContext
@@ -87,7 +95,7 @@ def resolve_club(conn, query: str) -> dict:
     for alias, club_id in aliases.items():
         pool.setdefault(_fold(alias), club_id)
     close = difflib.get_close_matches(folded, list(pool), n=_TEAM_CANDIDATES_MAX, cutoff=_CLOSE_MATCH_CUTOFF)
-    if len(set(pool[c] for c in close)) == 1:
+    if len({pool[c] for c in close}) == 1:
         club = club_of(pool[close[0]])
         if club:
             return club
@@ -361,16 +369,16 @@ def resolve_player(
 class _NoopMembers:
     """空成员缓存占位（未启用群成员功能时）：所有人查不到、所有绑定不存在。"""
 
-    def find_by_name(self, group_id, name):  # noqa: ANN001
+    def find_by_name(self, group_id, name):
         return []
 
-    def find_coaches(self, group_id, club_id):  # noqa: ANN001
+    def find_coaches(self, group_id, club_id):
         return []
 
-    def binding_of(self, group_id, qq):  # noqa: ANN001
+    def binding_of(self, group_id, qq):
         return None
 
-    def last_refreshed(self, group_id):  # noqa: ANN001
+    def last_refreshed(self, group_id):
         return None
 
 
@@ -419,8 +427,8 @@ def _remember_bindings(ctx: ToolContext, cache_key: str, bindings: dict) -> None
     if ctx.members is not None:
         try:
             ctx.members.apply_bindings(cache_key, bindings)
-        except Exception:  # noqa: BLE001 - 缓存写失败不影响回答
-            pass
+        except Exception:  # 缓存写失败不影响回答
+            logging.getLogger(__name__).debug("写入群成员绑定缓存失败", exc_info=True)
 
 
 class _BindingsDegraded(Exception):

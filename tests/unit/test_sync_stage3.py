@@ -6,7 +6,6 @@ import json
 import sqlite3
 
 import pytest
-
 from conftest import FixtureTransport, import_plugin, load_fixture
 
 dao = import_plugin("db.dao")
@@ -101,7 +100,7 @@ class TestPlayersSync:
             assert conn.execute("SELECT COUNT(*) n FROM players WHERE active=1").fetchone()["n"] == 11
 
             # 第二轮名单缩水：只有 listed + trainee（normal 6 人退出）
-            p1 = load_fixture("club_players_normal_p1.json")
+            load_fixture("club_players_normal_p1.json")
             listed = load_fixture("club_players_listed.json")
             trainee = load_fixture("club_players_trainee.json")
 
@@ -730,7 +729,7 @@ class TestQueries:
     def test_read_scores_active_only(self, synced_conn):
         rows = dao.read_player_scores(synced_conn)
         assert len(rows) == 11
-        assert all(r["active"] if "active" in r else True for r in rows)
+        assert all(r.get("active", True) for r in rows)
 
 
 # ---- sources 解析对 fixture 的自检 ----

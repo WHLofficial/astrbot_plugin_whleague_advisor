@@ -10,7 +10,6 @@ import re
 import sqlite3
 
 import pytest
-
 from conftest import import_plugin
 
 dao = import_plugin("db.dao")

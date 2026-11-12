@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # 设计 §4.2：只 import services.market_value（其内部复用 services.formula /
 # fitting / scores 的纯函数；scores 经仓根插件包身份导入，不引入 astrbot）。
-import services.market_value as mv  # noqa: E402
+import services.market_value as mv
 
 PLATFORM_DIR = Path("C:/Users/bhdjb/whlProgram/WHL-club-operations-platform")
 DEFAULT_OUTPUT = "market_values_seed.sql"

@@ -16,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 import aiohttp
@@ -75,17 +76,19 @@ async def aiohttp_transport(
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                async with session.request(method, url, params=params) as resp:
-                    body = await resp.read()
-                    if 400 <= resp.status < 500:
-                        return HttpResponse(resp.status, body)  # 4xx 不重试
-                    if resp.status >= 500 and attempt < MAX_RETRIES:
-                        last_error = SourceError(
-                            f"上游 {resp.status}", url=url, status=resp.status
-                        )
-                        raise _Retryable()
-                    return HttpResponse(resp.status, body)
+            async with (
+                aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
+                session.request(method, url, params=params) as resp,
+            ):
+                body = await resp.read()
+                if 400 <= resp.status < 500:
+                    return HttpResponse(resp.status, body)  # 4xx 不重试
+                if resp.status >= 500 and attempt < MAX_RETRIES:
+                    last_error = SourceError(
+                        f"上游 {resp.status}", url=url, status=resp.status
+                    )
+                    raise _Retryable()
+                return HttpResponse(resp.status, body)
         except _Retryable:
             pass
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:

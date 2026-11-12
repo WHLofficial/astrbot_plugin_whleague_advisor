@@ -12,7 +12,6 @@ import math
 import sqlite3
 
 import pytest
-
 from conftest import FixtureTransport, import_plugin, seed_transaction_deals
 
 dao = import_plugin("db.dao")
@@ -548,7 +547,7 @@ class TestAdminCommands:
             seed_transaction_deals(conn)
             run_scores(conn)  # 无旧模型 → 不 held → 直接 auto 发布
             assert dao.get_meta(conn, "model_status") == "ok"
-            published = dao.read_model_params(conn, "comp")
+            dao.read_model_params(conn, "comp")
             # 新数据贴旧模型曲线但带噪声 → 候选 LOO（杠杆放大）差于旧模型 → held
             conn.execute("UPDATE deals SET fee = fee * 1.02 + 0.13 WHERE id >= 900000")
             run_scores(conn)

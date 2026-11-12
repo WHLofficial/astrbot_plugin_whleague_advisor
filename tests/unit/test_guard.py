@@ -1,6 +1,7 @@
 """guard/ 单测：错误枚举完整性、信封形状、滑动窗口限流、入参 schema 校验。"""
 
 import json
+from typing import ClassVar
 
 from conftest import import_plugin
 
@@ -64,7 +65,7 @@ class TestRateLimit:
         return guard_ratelimit.SlidingRateLimiter(now_fn=now, **kw), ticks
 
     def test_group_limit_30_per_10min(self):
-        limiter, ticks = self._limiter(user_limit=1000)  # 只测群键
+        limiter, _ticks = self._limiter(user_limit=1000)  # 只测群键
         for _ in range(30):
             limiter.check_and_consume("g", "u")
         try:
@@ -75,7 +76,7 @@ class TestRateLimit:
             assert exc.data["scope"] == "本群"
 
     def test_user_limit_10_per_10min(self):
-        limiter, ticks = self._limiter(group_limit=1000)  # 只测人键
+        limiter, _ticks = self._limiter(group_limit=1000)  # 只测人键
         for _ in range(10):
             limiter.check_and_consume("g", "u")
         try:
@@ -121,7 +122,7 @@ class TestRateLimit:
 
 
 class TestSchema:
-    SPEC = {
+    SPEC: ClassVar[dict] = {
         "name": {"type": "string", "required": True},
         "limit": {"type": "int", "min": 1, "max": 50, "default": 15},
         "detail": {"type": "bool", "default": False},

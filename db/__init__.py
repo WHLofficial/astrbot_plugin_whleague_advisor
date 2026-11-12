@@ -3,4 +3,4 @@
 from .dao import connect
 from .migrations import CURRENT_VERSION, MIGRATIONS, run_migrations
 
-__all__ = ["connect", "run_migrations", "MIGRATIONS", "CURRENT_VERSION"]
+__all__ = ["CURRENT_VERSION", "MIGRATIONS", "connect", "run_migrations"]

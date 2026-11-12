@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from conftest import import_plugin
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

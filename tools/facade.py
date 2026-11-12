@@ -23,8 +23,8 @@ from ..guard.errors import (
 )
 from . import compare as compare_tool
 from . import league as league_tool
-from . import match as match_tool
 from . import market as market_tool
+from . import match as match_tool
 from . import player as player_tool
 from . import rules as rules_tool
 from . import team as team_tool
@@ -96,7 +96,7 @@ async def call_tool(ctx: ToolContext, name: str, args: dict, call: CallContext) 
     except ToolError as exc:
         logger.info("tool=%s group=%s ok=False error=%s", name, call.group_id, exc.code)
         return dump_envelope(exc.to_envelope())
-    except Exception:  # noqa: BLE001 - 异常栈绝不进回答
+    except Exception:
         logger.exception("tool=%s group=%s 未预期错误", name, call.group_id)
         return dump_envelope(error_envelope(
             "UPSTREAM_ERROR",

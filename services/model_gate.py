@@ -19,10 +19,11 @@ import math
 import sqlite3
 from dataclasses import dataclass, field
 
-from ..db import dao
 from . import fitting
 from .formula import COMP_DEFAULT_PARAMS
-from .scores import COMP_DEAL_TYPES  # 指纹与拟合同源：只认三类真实成交（评审 finding 5）
+from .scores import (
+    COMP_DEAL_TYPES,  # 指纹与拟合同源：只认三类真实成交（评审 finding 5）
+)
 
 # ---- 门禁阈值（§4.1 表格，测试锁定）----
 GATE_MIN_N = 20            # 总样本

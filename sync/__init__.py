@@ -4,12 +4,12 @@ from .jobs import JOBS, JobOutcome, SyncContext, run_full_sync, run_job
 from .scheduler import BACKOFF_STEPS, DEFAULT_INTERVALS, SyncScheduler
 
 __all__ = [
+    "BACKOFF_STEPS",
+    "DEFAULT_INTERVALS",
     "JOBS",
     "JobOutcome",
     "SyncContext",
+    "SyncScheduler",
     "run_full_sync",
     "run_job",
-    "BACKOFF_STEPS",
-    "DEFAULT_INTERVALS",
-    "SyncScheduler",
 ]

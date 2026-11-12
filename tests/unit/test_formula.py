@@ -6,7 +6,6 @@ market-rules.ts / bypass-rules.ts / negotiation-secret.ts，只读参考），
 """
 
 import pytest
-
 from conftest import import_plugin, load_fixture
 
 formula = import_plugin("services.formula")
@@ -159,7 +158,7 @@ class TestRoleMapping:
         """画像关键属性逐角色 5–8 项（§5.2 清单）。"""
         assert len(formula.PROFILE_ATTRS["GK"]) == 5
         assert len(formula.PROFILE_ATTRS["CB"]) == 7
-        for role, keys in formula.PROFILE_ATTRS.items():
+        for keys in formula.PROFILE_ATTRS.values():
             assert 5 <= len(keys) <= 8
             assert len(set(keys)) == len(keys)
 

@@ -154,7 +154,7 @@ class SyncScheduler:
                 await self.run_cycle()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 —— 调度循环绝不因单轮异常退出
+            except Exception:
                 logger.exception("同步循环本轮异常，跳过")
             delay = self._poll_interval
             if self._jitter:

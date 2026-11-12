@@ -16,7 +16,6 @@ import types
 from pathlib import Path
 
 import pytest
-
 from conftest import REPO_ROOT, import_plugin
 
 subagents = import_plugin("subagents")
@@ -383,7 +382,7 @@ def test_no_eval_questions_hardcoded():
     """persona.yaml 的题面（ask 字段）一个都不许出现在插件源码与 prompt 文件里。"""
     if not PERSONA_YAML.is_file():
         pytest.skip("tests/eval/persona.yaml 不在本机（公开 clone 无评测题集）")
-    asks = re.findall(r'^\s*ask:\s*"(.+)"\s*$', PERSONA_YAML.read_text(encoding="utf-8"), re.M)
+    asks = re.findall(r'^\s*ask:\s*"(.+)"\s*$', PERSONA_YAML.read_text(encoding="utf-8"), re.MULTILINE)
     assert len(asks) >= 20, f"题面解析异常：仅 {len(asks)} 条"
     sources = [(REPO_ROOT / "subagents.py").read_text(encoding="utf-8"),
                (REPO_ROOT / "main.py").read_text(encoding="utf-8")]

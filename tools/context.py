@@ -36,7 +36,7 @@ class ToolContext:
     allowed_groups: set[str] | None = None
     """允许使用工具的群（str 化）；None = 不限群（单测方便）。生产由 enabled_groups 装配。
     同会话绕过负缓存的状态在 TranslationCache._bypassed（Q11-Q13），不在此处。"""
-    club: "ClubSource | None" = None
+    club: ClubSource | None = None
     """平台公开只读客户端；仅无合同/非活跃球员估价需要现场拉 meta。测试可为 None。"""
 
     def group_allowed(self, group_id: str | None) -> bool:
@@ -57,7 +57,7 @@ class CallContext:
     sender_card: str | None = None
 
     @classmethod
-    def from_event(cls, event) -> "CallContext":
+    def from_event(cls, event) -> CallContext:
         """从 AstrMessageEvent 提取（sender.user_id 必须 str，HANDOFF §5）。
 
         群名片取 message_obj 里的 sender.card（aiocqhttp），取不到用昵称。
