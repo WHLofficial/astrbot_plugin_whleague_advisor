@@ -538,23 +538,25 @@ class WhleagueAdvisorPlugin(Star):
 
     @filter.llm_tool("whl_team_brief")
     async def whl_team_brief(self, event: AstrMessageEvent, **kwargs) -> str:
-        """查 WHL 联赛某球队的概况；默认给判断素材，detail=true 才返回完整数据。
+        """查 WHL 联赛某球队的概况；默认给评价素材，detail=true 才返回完整数据。
 
         team 和 person 都不填时按「发送者绑定的队」解析（「我们队」）；person 填群成员
         名字时按「他执教的队」解析，回答里要说明。问「某某是谁/执教哪队」用
         view=person。查不到绑定会返回 NOT_BOUND，此时应反问用户执教哪支队。
 
-        回答时先用一句话给结论，默认最多补 1–2 个关键数字；不要逐字段复述返回的 data。
-        默认 data 是判断素材（facts/signals），不是完整排名、阵容和逐场比分；顶层
-        presentation 给出风格和取舍要求，按它组织回答。用户明确要榜单、多条或逐场明细
-        时，才传 detail=true 取全量。
+        回答时先给一句自己的判断，再从排名/争冠保级形势、攻防表现、阵容结构（核心、
+        主力区间、短板位置组）、关键球员、近期状态、多线赛事、工资里选 2–3 个最有
+        反差的角度展开成一段话（2–4 句，不列清单）；不要逐字段复述返回的 data，数字
+        只做证据，一段里 2–3 个足够；有好说好，没有明显问题不要硬找。顶层
+        presentation 给出风格与好例/坏例，按它组织回答。用户明确要榜单、多条或逐场
+        明细时，才传 detail=true 取全量。
 
         Args:
             team(string): 可选。队名，如「曼联」；库里存中文队名。
             person(string): 可选。群成员名字（名片/昵称），按其执教的队解析。
             view(string): 可选。team=球队数据（默认）；person=个人卡（他是谁/执教哪队）。
             scope(string): 可选。team/person 都缺时用 me（按发送者绑定）。
-            detail(boolean): 可选。true=完整数据；默认只给 facts/signals。
+            detail(boolean): 可选。true=完整排名/阵容/近期战绩；默认给评价素材（战绩/分差/阵容结构/关键球员/多线/一线队工资）。
         """
         return await self._call_tool("whl_team_brief", event, kwargs)
 
