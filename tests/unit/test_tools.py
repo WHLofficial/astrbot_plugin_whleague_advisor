@@ -553,6 +553,23 @@ class TestCoreProfile:
         assert core["weakestGroup"] == "DF"
         assert core["weakestGroupCa"] == 75.0
 
+    def test_four_group_means_tied_no_weakest(self):
+        """四组均值并列最低（各 80）：无唯一最弱组 → weakest 两键都省略。
+
+        各组分布不同但均值同为精确 80.0（GK 1×80；DF 80/80/80/80；MF 79/80/80/81；
+        FW 79/80/81）：若实现误用组内最高/最低 CA 比较，本构造会产出唯一「最弱」组而失败。
+        """
+        players = (
+            [_pl("GK", 80)]
+            + [_pl("CB", 80), _pl("RB", 80), _pl("LB", 80), _pl("CB", 80)]
+            + [_pl("CDM", 79), _pl("CM", 80), _pl("CAM", 80), _pl("RM", 81)]
+            + [_pl("RW", 79), _pl("LW", 80), _pl("ST", 81)]
+        )
+        core = team_mod._core_profile(players)
+        assert core["coreCount"] == 12
+        assert "weakestGroup" not in core
+        assert "weakestGroupCa" not in core
+
     def test_missing_gk_weakest_is_gk_without_ca(self):
         """无主力 GK：gkCa 省略；恰一个空组 → GK 即最弱（缺人本身是最弱），无 CA 值。"""
         players = (

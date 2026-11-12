@@ -28,7 +28,7 @@ PRESENTATION = (
     "没有明显问题不要硬找；可以带一句主观反应，但判断不能和数据矛盾；不编战术、伤病、xG、"
     "消费券；CPU 队不提工资。用户说“锐评”或语气明显挑衅时可以更直接、更损一点，"
     "普通评价保持克制。一段话说完，不列清单。\n"
-    "好例（学方法，别照抄）：“贝蒂斯像两支队：联赛 11 场只进 6 个，进攻确实没产出；"
+    "好例（学方法，别照抄；A 队与数字均为占位）：“A 队像两支队：联赛 11 场只进 6 个，进攻确实没产出；"
     "杯赛 3 场 2 胜 1 负又活了。门将也差点意思。”\n"
     "坏例：“第12，3胜8负，进6丢22，攻击力真拉胯。”——先念流水账再贴空泛标签，"
     "没有判断也没有解释。"
@@ -386,7 +386,8 @@ def _core_profile(players: list[dict]) -> dict:
     - 不伪造人数：组内不足配额按实际入选数；coreCount 如实（0–12）。
     - coreMedianCa/coreRange 只在入选 ≥1 人时输出；gkCa 无主力 GK 省略。
     - weakestGroup 取「组内主力入选者平均 CA」最低的组；恰一个空组时该组即最弱
-      （缺人本身是最弱，weakestGroupCa 省略）；空组 ≥2 个无法唯一判定，两键都省略。
+      （缺人本身是最弱，weakestGroupCa 省略）；空组 ≥2 个无法唯一判定，两键都省略；
+      四组均值并列最低（无唯一最弱）时同样两键都省略。
     纯函数：只吃 players 明细行，不查库，可独立单测。
     """
     candidates: dict[str, list[int]] = {group: [] for group in GROUP_ORDER}
@@ -421,9 +422,12 @@ def _core_profile(players: list[dict]) -> dict:
         profile["weakestGroup"] = empty[0]
     elif not empty:
         means = {g: sum(cas) / len(cas) for g, cas in core.items()}
-        weakest = min(GROUP_ORDER, key=lambda g: means[g])
-        profile["weakestGroup"] = weakest
-        profile["weakestGroupCa"] = round(means[weakest], 1)
+        min_ca = min(means.values())
+        weakest = [g for g in GROUP_ORDER if means[g] == min_ca]
+        # 四组均值并列最低时无唯一最弱组，说「XX 是短板」会冤枉并列组 → 两键都省略
+        if len(weakest) == 1:
+            profile["weakestGroup"] = weakest[0]
+            profile["weakestGroupCa"] = round(min_ca, 1)
     return profile
 
 
