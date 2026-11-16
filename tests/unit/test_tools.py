@@ -229,7 +229,8 @@ class TestTeamBrief:
         assert 1 <= len(data["keyPlayers"]) <= 3
         assert data["keyPlayers"][0]["fcId"] is not None
         assert data["competitions"]
-        assert "不按字段顺序" in env["presentation"]
+        assert "主矛盾" in env["presentation"]
+        assert "不要按“排名/积分 → 阵容 → 下一场”的固定顺序" in env["presentation"]
         assert "没有明显问题不要硬找" in env["presentation"]
         assert "standing" not in data and "recent" not in data
         assert "第 3 名" not in env["summary"]
@@ -427,7 +428,20 @@ class TestTeamBriefSquadMaterial:
         """风格规则与好例/坏例随响应同行（学方法，别照抄）。"""
         env = call(ctx, "whl_team_brief", {"team": "利物浦"})
         p = env["presentation"]
-        for token in ("不按字段顺序", "没有明显问题不要硬找", "锐评", "别照抄", "像两支队", "流水账"):
+        for token in (
+            "主矛盾",
+            "不要按“排名/积分 → 阵容 → 下一场”的固定顺序",
+            "每个因果或历史判断都要能指到一个字段",
+            "最弱组只是相对最弱",
+            "下一场只在它改变判断时提",
+            "没有明显问题不要硬找",
+            "最终只输出一段话",
+            "不要换行",
+            "锐评",
+            "别照抄",
+            "像两支队",
+            "流水账",
+        ):
             assert token in p
 
     def test_detail_path_keeps_raw_squad_no_core_caveat(self, ctx):
