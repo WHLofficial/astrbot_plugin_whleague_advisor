@@ -1,4 +1,4 @@
-"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.7）。
+"""astrbot_plugin_whleague_advisor：WHL 联赛只读问答顾问（v0.8.8）。
 
 默认空转（HANDOFF §3 Q15-A）：enabled_groups / club_base_url 任一未配置时，
 不启动数据同步、不注册任何 whl_* 工具（加载后立即停用）、不发任何网络请求；
@@ -9,6 +9,10 @@ v0.2.0 数据层（阶段 2）：season → clubs → standings → fixtures 后
 
 v0.3.0 球员/市场/模型（阶段 3）：players/roster/market/attrs/scores 任务链，
 拟合系数存 model_params（n/r2/version），估价基线存 player_scores。
+
+v0.8.8 球队评价表达：
+- whl_team_brief 先定主矛盾，再选 2–3 个角度解释，不固定“排名→阵容→下一场”骨架；
+- 因果/历史判断必须能指到字段；最弱组按相对口径；下一场只在关键节点提。
 
 v0.8.7 成交属性快照与同级画像标注：
 - deals 补属性快照三列，market 热同步用当前属性存派生基座（一次性捕获；
